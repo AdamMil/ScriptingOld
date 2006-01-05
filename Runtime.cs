@@ -981,15 +981,6 @@ public sealed class Ops
   public static object GetGlobal(string name) { return TopLevel.Current.Get(name); }
   public static bool GetGlobal(string name, out object value) { return TopLevel.Current.Get(name, out value); }
 
-  public static object GetMember(object obj, string name)
-  { LastPtr = obj;
-    return MemberContainer.FromObject(obj).GetSlot(name);
-  }
-
-  public static bool GetMember(object obj, string name, out object member)
-  { return MemberContainer.FromObject(obj).GetSlot(name, out member);
-  }
-
   public static ICollection GetMemberNames(object obj) { return GetMemberNames(obj, false); }
   public static ICollection GetMemberNames(object obj, bool includeImports)
   { return MemberContainer.FromObject(obj).GetMemberNames(includeImports);
@@ -1001,9 +992,18 @@ public sealed class Ops
     return prop==null ? value : prop.Get(args);
   }
 
+  public static object GetSlot(object obj, string name)
+  { LastPtr = obj;
+    return MemberContainer.FromObject(obj).GetSlot(name);
+  }
+
+  public static bool GetSlot(object obj, string name, out object member)
+  { return MemberContainer.FromObject(obj).GetSlot(name, out member);
+  }
+
   public static object Invoke(object target, string name) { return Invoke(target, name, EmptyArray); }
   public static object Invoke(object target, string name, params object[] args)
-  { return Call(GetMember(target, name), args);
+  { return Call(GetSlot(target, name), args);
   }
 
   public static bool Invoke(object target, string name, out object retValue)
@@ -1011,7 +1011,7 @@ public sealed class Ops
   }
   public static bool Invoke(object target, string name, out object retValue, params object[] args)
   { object method;
-    if(GetMember(target, name, out method)) { retValue = Call(method, args); return true; }
+    if(GetSlot(target, name, out method)) { retValue = Call(method, args); return true; }
     else { retValue = null; return false; }
   }
 

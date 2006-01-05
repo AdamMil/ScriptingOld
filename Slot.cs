@@ -197,7 +197,11 @@ public sealed class NamedFrameSlot : Slot
 
   public override Type Type { get { return typeof(object); } }
 
-  public override void EmitDelete(CodeGenerator cg) { throw new NotSupportedException("this should not be called"); }
+  public override void EmitDelete(CodeGenerator cg)
+  { Frame.EmitGet(cg);
+    cg.EmitString(Name);
+    cg.EmitCall(typeof(TopLevel), "Unbind");
+  }
 
   public override void EmitGet(CodeGenerator cg)
   { SetupBinding(cg);
