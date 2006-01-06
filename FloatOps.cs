@@ -48,7 +48,7 @@ public sealed class FloatOps
       case TypeCode.UInt32: return a + (uint)b;
       case TypeCode.UInt64: return a + (ulong)b;
     }
-    throw Ops.TypeError("invalid operand types for +: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().FloatAdd(a, b);
   }
 
   public static bool AreEqual(double a, object b)
@@ -106,7 +106,7 @@ public sealed class FloatOps
       case TypeCode.UInt16: bv=(ushort)b; break;
       case TypeCode.UInt32: bv=(uint)b; break;
       case TypeCode.UInt64: bv=(ulong)b; break;
-      default: throw Ops.TypeError("can't compare types: {0} and {1}", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().FloatCompare(a, b);
     }
     return a<bv ? -1 : a>bv ? 1 : 0;
   }
@@ -140,7 +140,8 @@ public sealed class FloatOps
       case TypeCode.UInt16: bv=(ushort)b; break;
       case TypeCode.UInt32: bv=(uint)b; break;
       case TypeCode.UInt64: bv=(ulong)b; break;
-      default: throw Ops.TypeError("invalid operand types for /: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return floor ? Ops.GetCurrentLanguage().FloatFloorDivide(a, b)
+                            : Ops.GetCurrentLanguage().FloatDivide(a, b);
     }
     if(bv==0) throw new DivideByZeroException("float division by zero");
 
@@ -175,7 +176,7 @@ public sealed class FloatOps
       case TypeCode.UInt16: bv=(ushort)b; break;
       case TypeCode.UInt32: bv=(uint)b; break;
       case TypeCode.UInt64: bv=(ulong)b; break;
-      default: throw Ops.TypeError("invalid operand types for %: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().FloatModulus(a, b);
     }
     if(bv==0) throw new DivideByZeroException("float modulus by zero");
     return Math.IEEERemainder(a, bv);
@@ -201,7 +202,7 @@ public sealed class FloatOps
       case TypeCode.UInt32: return a * (uint)b;
       case TypeCode.UInt64: return a * (ulong)b;
     }
-    throw Ops.TypeError("invalid operand types for *: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().FloatMultiply(a, b);
   }
 
   public static object Power(double a, object b)
@@ -230,7 +231,7 @@ public sealed class FloatOps
       case TypeCode.UInt16: bv=(ushort)b; break;
       case TypeCode.UInt32: bv=(uint)b; break;
       case TypeCode.UInt64: bv=(ulong)b; break;
-      default: throw Ops.TypeError("invalid operand types for expt: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().FloatPower(a, b);
     }
 
     return Math.Pow(a, bv);
@@ -256,7 +257,7 @@ public sealed class FloatOps
       case TypeCode.UInt32: return a - (uint)b;
       case TypeCode.UInt64: return a - (ulong)b;
     }
-    throw Ops.TypeError("invalid operand types for -: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().FloatSubtract(a, b);
   }
 }
 

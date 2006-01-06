@@ -521,7 +521,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.Add((long)v, b) : IntegerOps.Add(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for +: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().Add(a, b);
   }
 
   public static bool AreEqual(object a, object b)
@@ -576,7 +576,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.BitwiseAnd((long)v, b) : IntegerOps.BitwiseAnd(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for &: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().BitwiseAnd(a, b);
   }
 
   public static object BitwiseOr(object a, object b)
@@ -599,7 +599,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.BitwiseOr((long)v, b) : IntegerOps.BitwiseOr(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for |: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().BitwiseOr(a, b);
   }
 
   public static object BitwiseNegate(object a)
@@ -622,7 +622,7 @@ public sealed class Ops
         return v<=long.MaxValue ? (object)(~(long)v) : (object)(~new Integer(v));
       }
     }
-    throw TypeError("unsupported operand type for ~: '{0}'", TypeName(a));
+    return GetCurrentLanguage().BitwiseNegate(a);
   }
 
   public static object BitwiseXor(object a, object b)
@@ -645,7 +645,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.BitwiseXor((long)v, b) : IntegerOps.BitwiseXor(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for ^: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().BitwiseXor(a, b);
   }
 
   public static object Call(string name) { return Call(GetGlobal(name), EmptyArray); }
@@ -799,7 +799,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.Compare((long)v, b) : IntegerOps.Compare(new Integer(v), b);
       }
     }
-    throw Ops.TypeError("can't compare types: {0} and {1}", Ops.TypeName(a), Ops.TypeName(b));
+    return GetCurrentLanguage().Compare(a, b);
   }
 
   public static object ConvertTo(object o, Type type)
@@ -870,7 +870,7 @@ public sealed class Ops
       case TypeCode.UInt32: return LongOps.Divide((uint)a, b, false);
       case TypeCode.UInt64: return IntegerOps.Divide(new Integer((ulong)a), b);
     }
-    throw TypeError("unsupported operand types for /: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().Divide(a, b);
   }
 
   public static object Equal(object a, object b) { return FromBool(AreEqual(a, b)); }
@@ -972,11 +972,15 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.Divide((long)v, b, true) : IntegerOps.Divide(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for //: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().FloorDivide(a, b);
   }
 
   // TODO: check whether we can eliminate this (ie, "(eq? #t #t)" still works reliably)
   public static object FromBool(bool value) { return value ? TRUE : FALSE; }
+
+  public static Language GetCurrentLanguage()
+  { return CurrentFunction==null ? Options.Current.Language : CurrentFunction.Language;
+  }
 
   public static object GetGlobal(string name) { return TopLevel.Current.Get(name); }
   public static bool GetGlobal(string name, out object value) { return TopLevel.Current.Get(name, out value); }
@@ -986,19 +990,26 @@ public sealed class Ops
   { return MemberContainer.FromObject(obj).GetMemberNames(includeImports);
   }
 
+  public static object GetProperty(object obj, string name)
+  { MemberContainer mc = obj as MemberContainer;
+    return mc!=null ? mc.GetValue(name) : MemberContainer.FromObject(obj).GetValue(name, obj);
+  }
+
+  public static bool GetProperty(object obj, string name, out object value)
+  { MemberContainer mc = obj as MemberContainer;
+    return mc!=null ? mc.GetValue(name, out value) : MemberContainer.FromObject(obj).GetValue(name, out value, obj);
+  }
+
   public static object GetPropertyValue(object value) { return GetPropertyValue(value, EmptyArray); }
   public static object GetPropertyValue(object value, params object[] args)
   { IProperty prop = value as IProperty;
     return prop==null ? value : prop.Get(args);
   }
 
-  public static object GetSlot(object obj, string name)
-  { LastPtr = obj;
-    return MemberContainer.FromObject(obj).GetSlot(name);
-  }
+  public static object GetSlot(object obj, string name) { return MemberContainer.FromObject(obj).GetSlot(name); }
 
-  public static bool GetSlot(object obj, string name, out object member)
-  { return MemberContainer.FromObject(obj).GetSlot(name, out member);
+  public static bool GetSlot(object obj, string name, out object value)
+  { return MemberContainer.FromObject(obj).GetSlot(name, out value);
   }
 
   public static object Invoke(object target, string name) { return Invoke(target, name, EmptyArray); }
@@ -1012,6 +1023,20 @@ public sealed class Ops
   public static bool Invoke(object target, string name, out object retValue, params object[] args)
   { object method;
     if(GetSlot(target, name, out method)) { retValue = Call(method, args); return true; }
+    else { retValue = null; return false; }
+  }
+
+  public static object InvokeProperty(object target, string name) { return InvokeProperty(target, name, EmptyArray); }
+  public static object InvokeProperty(object target, string name, params object[] args)
+  { return Call(GetProperty(target, name), args);
+  }
+
+  public static bool InvokeProperty(object target, string name, out object retValue)
+  { return InvokeProperty(target, name, out retValue, EmptyArray);
+  }
+  public static bool InvokeProperty(object target, string name, out object retValue, params object[] args)
+  { object method;
+    if(GetProperty(target, name, out method)) { retValue = Call(method, args); return true; }
     else { retValue = null; return false; }
   }
 
@@ -1034,7 +1059,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.LeftShift((long)v, b) : IntegerOps.LeftShift(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for <<: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().RightShift(a, b);
   }
 
   public static object Less(object a, object b) { return FromBool(Compare(a,b)<0); }
@@ -1118,7 +1143,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.Modulus((long)v, b) : IntegerOps.Modulus(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for %: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().Add(a, b);
   }
 
   public static object More(object a, object b) { return FromBool(Compare(a,b)>0); }
@@ -1153,7 +1178,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.Multiply((long)v, b) : IntegerOps.Multiply(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for *: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().Multiply(a, b);
   }
 
   public static object Negate(object a)
@@ -1180,7 +1205,7 @@ public sealed class Ops
         return v<=long.MaxValue ? (object)-(long)v : (object)-new Integer(v);
       }
     }
-    throw TypeError("unsupported operand type for unary -: '{0}'", TypeName(a));
+    return GetCurrentLanguage().Negate(a);
   }
 
   public static object NotEqual(object a, object b) { return FromBool(!AreEqual(a, b)); }
@@ -1208,7 +1233,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.Power((long)v, b) : IntegerOps.Power(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for **: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().Power(a, b);
   }
 
   // TODO: optimize this
@@ -1237,7 +1262,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.RightShift((long)v, b) : IntegerOps.RightShift(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for >>: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().RightShift(a, b);
   }
 
   public static void SetMember(object obj, string name, object value)
@@ -1273,7 +1298,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.Subtract((long)v, b) : IntegerOps.Subtract(new Integer(v), b);
       }
     }
-    throw TypeError("unsupported operand types for -: '{0}' and '{1}'", TypeName(a), TypeName(b));
+    return GetCurrentLanguage().Subtract(a, b);
   }
 
   public static SyntaxErrorException SyntaxError(string message) { return new SyntaxErrorException(message); }
@@ -1390,7 +1415,7 @@ public sealed class Ops
   public static readonly object FALSE=false, TRUE=true;
   public static readonly object[] EmptyArray = new object[0];
 
-  [ThreadStatic] public static object LastPtr;
+  [ThreadStatic] public static Template CurrentFunction;
 
   static bool IsIn(Type[] typeArr, Type type)
   { for(int i=0; i<typeArr.Length; i++) if(typeArr[i]==type) return true;
@@ -1477,6 +1502,15 @@ public sealed class RG
 
       // Call(object[])
       cg = tg.DefineMethodOverride(typeof(Lambda).GetMethod("Call", new Type[] { typeof(object[]) }), true);
+      Slot oldFunc = cg.AllocLocalTemp(typeof(Template));
+      cg.EmitFieldGet(typeof(Ops), "CurrentFunction");
+      oldFunc.EmitSet(cg);
+
+      cg.EmitThis();
+      cg.EmitFieldGet(typeof(Lambda), "Template");
+      cg.EmitFieldSet(typeof(Ops), "CurrentFunction");
+
+      cg.ILG.BeginExceptionBlock();
       cg.EmitThis();
       cg.EmitFieldGet(typeof(Closure), "Environment");
 
@@ -1490,9 +1524,15 @@ public sealed class RG
       cg.EmitThis();
       cg.EmitFieldGet(typeof(Lambda), "Template");
       cg.EmitFieldGet(typeof(Template), "FuncPtr");
-      cg.ILG.Emit(OpCodes.Tailcall);
+      cg.ILG.Emit(OpCodes.Tailcall); // TODO: with the addition of the exception block, this now has no effect. see if we can somehow preserve tail calling
       cg.ILG.EmitCalli(OpCodes.Calli, CallingConventions.Standard, typeof(object),
                        new Type[] { typeof(LocalEnvironment), typeof(object[]) }, null);
+      cg.EmitReturn();
+      cg.ILG.BeginFinallyBlock();
+      oldFunc.EmitGet(cg);
+      cg.EmitFieldSet(typeof(Ops), "CurrentFunction");
+      cg.ILG.EndExceptionBlock();
+      cg.FreeLocalTemp(oldFunc);
       cg.EmitReturn();
       cg.Finish();
 
@@ -1500,6 +1540,15 @@ public sealed class RG
       MethodInfo baseMethod =
         typeof(Lambda).GetMethod("Call", new Type[] { typeof(object[]), typeof(string[]), typeof(object[]) });
       cg = tg.DefineMethodOverride(baseMethod, true);
+      oldFunc = cg.AllocLocalTemp(typeof(Template));
+      cg.EmitFieldGet(typeof(Ops), "CurrentFunction");
+      oldFunc.EmitSet(cg);
+
+      cg.EmitThis();
+      cg.EmitFieldGet(typeof(Lambda), "Template");
+      cg.EmitFieldSet(typeof(Ops), "CurrentFunction");
+
+      cg.ILG.BeginExceptionBlock();
       cg.EmitThis();
       cg.EmitFieldGet(typeof(Closure), "Environment");
 
@@ -1515,9 +1564,15 @@ public sealed class RG
       cg.EmitThis();
       cg.EmitFieldGet(typeof(Lambda), "Template");
       cg.EmitFieldGet(typeof(Template), "FuncPtr");
-      cg.ILG.Emit(OpCodes.Tailcall);
+      cg.ILG.Emit(OpCodes.Tailcall); // TODO: with the addition of the exception block, this now has no effect. see if we can somehow preserve tail calling
       cg.ILG.EmitCalli(OpCodes.Calli, CallingConventions.Standard, typeof(object),
                        new Type[] { typeof(LocalEnvironment), typeof(object[]) }, null);
+      cg.EmitReturn();
+      cg.ILG.BeginFinallyBlock();
+      oldFunc.EmitGet(cg);
+      cg.EmitFieldSet(typeof(Ops), "CurrentFunction");
+      cg.ILG.EndExceptionBlock();
+      cg.FreeLocalTemp(oldFunc);
       cg.EmitReturn();
       cg.Finish();
 

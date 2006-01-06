@@ -46,7 +46,7 @@ public sealed class ComplexOps
       case TypeCode.UInt32: return a + (uint)b;
       case TypeCode.UInt64: return a + (ulong)b;
     }
-    throw Ops.TypeError("invalid operand types for +: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().ComplexAdd(a, b);
   }
 
   public static bool AreEqual(Complex a, object b)
@@ -92,7 +92,7 @@ public sealed class ComplexOps
       case TypeCode.UInt32: return a / (uint)b;
       case TypeCode.UInt64: return a / (ulong)b;
     }
-    throw Ops.TypeError("invalid operand types for /: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().ComplexDivide(a, b);
   }
 
   public static object Multiply(Complex a, object b)
@@ -114,7 +114,7 @@ public sealed class ComplexOps
       case TypeCode.UInt32: return a * (uint)b;
       case TypeCode.UInt64: return a * (ulong)b;
     }
-    throw Ops.TypeError("invalid operand types for *: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().ComplexMultiply(a, b);
   }
 
   public static bool NonZero(Complex a) { return a.real!=0 && a.imag!=0; }
@@ -139,7 +139,7 @@ public sealed class ComplexOps
       case TypeCode.UInt32: return a.Pow((uint)b);
       case TypeCode.UInt64: return a.Pow((ulong)b);
     }
-    throw Ops.TypeError("invalid operand types for **: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().ComplexPower(a, b);
   }
 
   public static object PowerMod(Complex a, object b, object c)
@@ -165,7 +165,7 @@ public sealed class ComplexOps
       case TypeCode.UInt32: return a - (uint)b;
       case TypeCode.UInt64: return a - (ulong)b;
     }
-    throw Ops.TypeError("invalid operand types for -: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().ComplexSubtract(a, b);
   }
 }
 
