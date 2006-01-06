@@ -512,11 +512,18 @@ public sealed class Name
 #endregion
 
 #region Options
+public enum OptimizeType : byte { None, Size, Speed }
+
 public sealed class Options
 { Options() { Language = NullLanguage.Instance; }
 
+  public bool OptimizeAny { get { return Optimize!=OptimizeType.None; } }
+  public bool OptimizeSize { get { return Optimize==OptimizeType.Size; } }
+  public bool OptimizeSpeed { get { return Optimize==OptimizeType.Speed; } }
+
   public Language Language;
-  public bool Debug, DebugModules, Optimize, IsPreCompilation;
+  public OptimizeType Optimize;
+  public bool Debug, DebugModules, IsPreCompilation;
   
   public static Options Current
   { get { return Pushed==null || Pushed.Count==0 ? Default : (Options)Pushed.Peek(); }
@@ -630,7 +637,7 @@ public sealed class AST
     LambdaNode ret = new LambdaNode(body);
     ret.Preprocess();
     ret.Walk(new NodeDecorator(ret));
-    ret.Walk(new CompileDecorator(Options.Current.Optimize));
+    ret.Walk(new CompileDecorator());
     return ret;
   }
 
@@ -641,26 +648,28 @@ public sealed class AST
     3. Creates shared CachePromise objects for equivalent MemberNodes
   */
   sealed class CompileDecorator : IWalker
-  { public CompileDecorator(bool optimize) { this.optimize=optimize; }
+  { public CompileDecorator() { optimize = Options.Current.Optimize; }
 
     public bool Walk(Node node) { return true; }
 
     public void PostWalk(Node node)
     { node.SetFlags();
-      if(optimize)
+      if(optimize!=OptimizeType.None)
       { node.Optimize();
 
-        MemberNode an = node as MemberNode;
-        if(an!=null && an.Value is VariableNode && an.Members.IsConstant)
-        { object obj = an.Members.Evaluate();
-          if(!(obj is string))
-            throw new SyntaxErrorException("MemberNode expects a string value as the second argument");
+        if(optimize==OptimizeType.Speed)
+        { MemberNode an = node as MemberNode;
+          if(an!=null && an.Value is VariableNode && an.Members.IsConstant)
+          { object obj = an.Members.Evaluate();
+            if(!(obj is string))
+              throw new SyntaxErrorException("MemberNode expects a string value as the second argument");
 
-          if(memberNodes==null) memberNodes = new Hashtable();
-          AccessKey key = new AccessKey(((VariableNode)an.Value).Name, (string)obj);
-          MemberNode.CachePromise promise = (MemberNode.CachePromise)memberNodes[key];
-          if(promise==null) memberNodes[key] = promise = new MemberNode.CachePromise();
-          an.Cache = promise;
+            if(memberNodes==null) memberNodes = new Hashtable();
+            AccessKey key = new AccessKey(((VariableNode)an.Value).Name, (string)obj);
+            MemberNode.CachePromise promise = (MemberNode.CachePromise)memberNodes[key];
+            if(promise==null) memberNodes[key] = promise = new MemberNode.CachePromise();
+            an.Cache = promise;
+          }
         }
       }
     }
@@ -686,7 +695,7 @@ public sealed class AST
     #endregion
 
     Hashtable memberNodes;
-    bool optimize;
+    OptimizeType optimize;
   }
   #endregion
 
@@ -1331,7 +1340,7 @@ public sealed class CallNode : Node
     bool hasTryArg = HasTryArg();
     if(hasTryArg || NumRuns>1) goto normal;
 
-    if(Options.Current.Optimize && Function is VariableNode)
+    if(Options.Current.OptimizeAny && Function is VariableNode)
     { VariableNode vn = (VariableNode)Function;
       if(Tail && FuncNameMatch(vn.Name, InFunc)) // see if we can tailcall ourselves with a branch
       { int positional = InFunc.Parameters.Length-(InFunc.HasList ? 1 : 0)-(InFunc.HasDict ? 1 : 0);
@@ -1580,7 +1589,7 @@ public sealed class CallNode : Node
 
   #region GetNodeType
   public override Type GetNodeType()
-  { if(Options.Current.Optimize && Function is VariableNode)
+  { if(Options.Current.OptimizeSpeed && Function is VariableNode)
     { string name = ((VariableNode)Function).Name.String;
       Language lang = Options.Current.Language;
       if(lang.IsConstantFunction(name)) return lang.GetInlinedResultType(name);
@@ -2494,7 +2503,7 @@ public class MemberNode : Node
 
       Label done;
       Slot cache;
-      if(!EnableCache || !Options.Current.Optimize) { cache=null; done=new Label(); }
+      if(!EnableCache || !Options.Current.OptimizeSpeed) { cache=null; done=new Label(); }
       else
       { Label miss=cg.ILG.DefineLabel(), isNull=cg.ILG.DefineLabel();
         cache = (Cache==null || Options.Current.IsPreCompilation ? new CachePromise() : Cache).GetCache(cg);
@@ -2967,19 +2976,14 @@ public sealed class ValueBindNode : Node
             if(mv==null) constLength = -1;
             else { constLength=mv.Values.Length; constValue=mv.Values; }
           }
-          else if(Options.Current.Optimize && Inits[i] is CallNode)
-          { CallNode cn = (CallNode)Inits[i];
-            // FIXME: this is lisp-specific. separate it out and while keep the optimization if possible
-            if(cn.Function is VariableNode && ((VariableNode)cn.Function).Name.String=="values")
-            { constLength = cn.Args.Length;
-              if(constLength<bindings.Length) goto checkLength;
-              object[] values = new object[bindings.Length];
-              for(int j=0; j<bindings.Length; j++)
-                values[j] = cn.Args[j].Expression.IsConstant ? cn.Args[j].Expression.Evaluate()
-                                                             : cn.Args[j].Expression;
-              constValue = values;
-            }
-            else goto skip;
+          else if(Options.Current.OptimizeAny && Inits[i] is ValuesNode)
+          { ValuesNode vn = (ValuesNode)Inits[i];
+            constLength = vn.Values.Length;
+            if(constLength<bindings.Length) goto checkLength;
+            object[] values = new object[bindings.Length];
+            for(int j=0; j<bindings.Length; j++)
+              values[j] = vn.Values[j].IsConstant ? vn.Values[j].Evaluate() : vn.Values[j];
+            constValue = values;
           }
           else goto skip;
           checkLength:
@@ -3098,6 +3102,46 @@ public sealed class ValueBindNode : Node
   public readonly Name[][] Names;
   public readonly Node[] Inits;
   public readonly Node Body;
+}
+#endregion
+
+#region ValuesNode
+public sealed class ValuesNode : Node
+{ public ValuesNode(params Node[] values) { Values = values; }
+
+  public override void Emit(CodeGenerator cg, ref Type etype)
+  { if(etype==typeof(void)) cg.EmitVoids(Values);
+    else
+    { cg.EmitObjectArray(Values);
+      cg.EmitNew(typeof(MultipleValues), typeof(object[]));
+      etype = typeof(MultipleValues);
+      TailReturn(cg);
+    }
+  }
+
+  public override object Evaluate() { return new MultipleValues(MakeObjectArray(Values)); }
+  public override Type GetNodeType() { return typeof(MultipleValues); }
+
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    foreach(Node n in Values) n.MarkTail(false);
+  }
+
+  public override void SetFlags()
+  { if(!IsConstant)
+    { ClearsStack = HasTryNode(Values);
+      Interrupts  = HasInterrupt(Values);
+    }
+  }
+
+  public override void Optimize() { IsConstant = AreConstant(Values); }
+
+  public override void Walk(IWalker w)
+  { if(w.Walk(this)) foreach(Node n in Values) n.Walk(w);
+    w.PostWalk(this);
+  }
+
+  public readonly Node[] Values;
 }
 #endregion
 
