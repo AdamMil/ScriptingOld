@@ -113,7 +113,7 @@ public sealed class ModuleGenerator
       bool addBuiltins = Options.Current.Language.ShouldAddBuiltins(type);
 
       Options.Current.Debug = Options.Current.DebugModules;
-      Options.Current.Optimize = true;
+      Options.Current.Optimize = OptimizeType.Speed;
       Options.Current.IsPreCompilation = false;
 
       if(addBuiltins) Options.Current.Language.Builtins.Import(TopLevel.Current);
