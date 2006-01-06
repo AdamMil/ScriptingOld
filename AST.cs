@@ -961,7 +961,7 @@ public abstract class Node
   public Flag Flags;
 
   public static bool AreCompatible(Type type, Type desired)
-  { if((type!=null && type.IsValueType) != desired.IsValueType) return false;
+  { if((type!=null && type.IsValueType) != (desired!=null && desired.IsValueType)) return false;
     Conversion conv = Ops.ConvertTo(type, desired);
     return conv!=Conversion.None && conv!=Conversion.Unsafe;
   }
@@ -1013,24 +1013,6 @@ public abstract class Node
     object[] ret = new object[length];
     for(int i=0; i<length; i++) ret[i] = nodes[i+start].Evaluate();
     return ret;
-  }
-
-  public static object MaybeEmitBranch(CodeGenerator cg, Node test, Label label, bool onTrue)
-  { OpCode brtrue=onTrue ? OpCodes.Brtrue : OpCodes.Brfalse, brfalse=onTrue ? OpCodes.Brfalse : OpCodes.Brtrue;
-    Type type = typeof(bool);
-    test.Emit(cg, ref type);
-
-    if(type==typeof(bool)) cg.ILG.Emit(brtrue, label);
-    else if(type==typeof(CodeGenerator.negbool)) cg.ILG.Emit(brfalse, label);
-    else if(type==typeof(object))
-    { cg.EmitIsTrue();
-      cg.ILG.Emit(brtrue, label);
-    }
-    else
-    { cg.ILG.Emit(OpCodes.Pop);
-      return type!=null;
-    }
-    return null;
   }
 
   public static object TryConvert(object value, ref Type etype)
@@ -2068,30 +2050,59 @@ public sealed class IfNode : Node
     { EmitConstant(cg, Evaluate(), ref etype);
       TailReturn(cg);
     }
+    else if(Test.IsConstant)
+    { if(Ops.IsTrue(Test.Evaluate())) IfTrue.Emit(cg, ref etype);
+      else if(IfFalse!=null) IfFalse.Emit(cg, ref etype);
+      else if(etype!=typeof(void))
+      { cg.ILG.Emit(OpCodes.Ldnull);
+        etype = typeof(object);
+      }
+    }
     else
-    { Label endlbl=Tail ? new Label() : cg.ILG.DefineLabel(), falselbl=cg.ILG.DefineLabel();
-      Type truetype=IfTrue.GetNodeType(), falsetype=IfFalse==null ? null : IfFalse.GetNodeType();
-      if(truetype!=falsetype || !AreCompatible(truetype, etype)) truetype = falsetype = etype = typeof(object);
-      else etype=truetype;
+    { Type truetype=IfTrue.GetNodeType(), falsetype = IfFalse==null ? null : IfFalse.GetNodeType();
+      if(etype==typeof(void)) truetype = falsetype = typeof(void);
+      else if((IfFalse==null || truetype==falsetype) && AreCompatible(truetype, etype)) etype = falsetype = truetype;
+      else if(truetype==typeof(void) && (IfFalse==null || falsetype==typeof(void)))
+      { falsetype = typeof(void);
+        etype = typeof(object);
+      }
+      else truetype = falsetype = etype = typeof(object);
+
+      bool hasEnd = !IfTrue.Tail && (IfFalse!=null || truetype!=typeof(void));
+      Label endlbl=hasEnd ? cg.ILG.DefineLabel() : new Label(), falselbl=cg.ILG.DefineLabel();
 
       cg.MarkPosition(this);
-      object ttype = MaybeEmitBranch(cg, Test, falselbl, false);
-      if(ttype==null)
-      { IfTrue.Emit(cg, ref truetype);
-        Debug.Assert(AreCompatible(truetype, etype));
-        if(!Tail) cg.ILG.Emit(OpCodes.Br, endlbl);
-        cg.ILG.MarkLabel(falselbl);
-        cg.EmitNode(IfFalse, ref falsetype);
-        Debug.Assert(AreCompatible(falsetype, etype));
-      }
+
+      Type type = typeof(bool);
+      Test.Emit(cg, ref type);
+      if(type==typeof(bool)) cg.ILG.Emit(OpCodes.Brfalse, falselbl);
+      else if(type==typeof(CodeGenerator.negbool)) cg.ILG.Emit(OpCodes.Brtrue, falselbl);
       else
-      { if((bool)ttype) IfTrue.Emit(cg, ref truetype);
-        else cg.EmitNode(IfFalse, ref falsetype);
-        cg.ILG.MarkLabel(falselbl);
+      { cg.EmitIsTrue();
+        cg.ILG.Emit(OpCodes.Brfalse, falselbl);
       }
 
-      if(!Tail) cg.ILG.MarkLabel(endlbl);
-      else if(IfFalse==null) TailReturn(cg);
+      if(truetype==typeof(void)) IfTrue.EmitVoid(cg);
+      else
+      { IfTrue.Emit(cg, ref truetype);
+        Debug.Assert(AreCompatible(truetype, etype));
+      }
+      if(hasEnd) cg.ILG.Emit(OpCodes.Br, endlbl);
+      cg.ILG.MarkLabel(falselbl);
+      
+      if(IfFalse!=null || truetype!=typeof(void))
+      { if(falsetype==typeof(void))
+        { if(IfFalse!=null) IfFalse.EmitVoid(cg);
+        }
+        else
+        { cg.EmitNode(IfFalse, ref falsetype);
+          Debug.Assert(AreCompatible(falsetype, etype));
+          if(IfFalse==null && IfTrue.Tail) TailReturn(cg);
+        }
+        if(hasEnd) cg.ILG.MarkLabel(endlbl);
+      }
+      if(truetype==typeof(void) && etype!=typeof(void)) cg.ILG.Emit(OpCodes.Ldnull);
+      if(!IfTrue.Tail) TailReturn(cg);
     }
   }
 
@@ -2111,6 +2122,8 @@ public sealed class IfNode : Node
   public override void MarkTail(bool tail)
   { Tail = tail;
     Test.MarkTail(false);
+    if(tail && IfTrue.GetNodeType()==typeof(void) && (IfFalse==null || IfFalse.GetNodeType()==typeof(void)))
+      tail = false;
     IfTrue.MarkTail(tail);
     if(IfFalse!=null) IfFalse.MarkTail(tail);
   }
