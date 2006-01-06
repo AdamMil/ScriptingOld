@@ -238,7 +238,7 @@ public sealed class NamedFrameSlot : Slot
   void SetupBinding(CodeGenerator cg)
   { if(Binding==null)
     { if(TopLevel.Current==null)
-        throw new CompileTimeException("An top level environment is necessary to compile this code.");
+        throw new CompileTimeException("A top level environment is necessary to compile this code.");
       Binding = cg.TypeGenerator.GetConstant(TopLevel.Current.GetBinding(Name));
     }
   }

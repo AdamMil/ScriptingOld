@@ -90,6 +90,7 @@ public sealed class ModuleGenerator
   public static MemberContainer Generate(Type type)
   { object[] attrs = type.GetCustomAttributes(typeof(ScriptCodeAttribute), false);
     if(attrs.Length==0) return ReflectedType.FromType(type, false);
+    Array.Sort(attrs, CodeAttrComparer.Instance);
 
     // TODO: come up with a better naming scheme (replacing '+' with '.' can create collisions)
     string filename = CachePath+type.FullName.Replace('+', '.')+".dll";
@@ -251,6 +252,30 @@ public sealed class ModuleGenerator
     if(Options.Current.Debug) ag.Module.SetUserEntryPoint((MethodInfo)cg.MethodBase);
 
     ag.Save();
+  }
+  #endregion
+
+  #region CodeAttrComparer
+  sealed class CodeAttrComparer : IComparer
+  { CodeAttrComparer() { }
+
+    public int Compare(object a, object b)
+    { ScriptCodeAttribute ca=(ScriptCodeAttribute)a, cb=(ScriptCodeAttribute)b;
+
+      // CompileTime < CompileTime|Runtime < Runtime
+      if(ca.RunAt==RunAt.CompileTime)
+      { if(cb.RunAt!=RunAt.CompileTime) return -1;
+      }
+      else if(ca.RunAt==RunAt.Both)
+      { if(cb.RunAt==RunAt.CompileTime) return 1;
+        if(cb.RunAt==RunAt.Runtime) return -1;
+      }
+      else if(cb.RunAt!=RunAt.Runtime) return 1;
+
+      return ca.Order-cb.Order;
+    }
+    
+    public static readonly CodeAttrComparer Instance = new CodeAttrComparer();
   }
   #endregion
 

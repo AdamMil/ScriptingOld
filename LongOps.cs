@@ -54,7 +54,7 @@ public sealed class LongOps
           if(bv>long.MaxValue) return new Integer(a)+bv;
           return checked(a + (long)b);
         }
-        default: throw Ops.TypeError("invalid operand types for +: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+        default: return Ops.GetCurrentLanguage().LongAdd(a, b);
       }
     }
     catch(OverflowException) { return IntegerOps.Add(new Integer(a), b); }
@@ -102,7 +102,7 @@ public sealed class LongOps
       case TypeCode.UInt16: return a & (ushort)b;
       case TypeCode.UInt32: return a & (uint)b;
       case TypeCode.UInt64: return (ulong)a & (ulong)b;
-      default: throw Ops.TypeError("invalid operand types for &: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default:  return Ops.GetCurrentLanguage().LongBitwiseAnd(a, b);
     }
   }
 
@@ -121,7 +121,7 @@ public sealed class LongOps
       case TypeCode.UInt16: return a | (ushort)b;
       case TypeCode.UInt32: return a | (uint)b;
       case TypeCode.UInt64: return (ulong)a | (ulong)b;
-      default: throw Ops.TypeError("invalid operand types for |: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().LongBitwiseOr(a, b);
     }
   }
 
@@ -140,7 +140,7 @@ public sealed class LongOps
       case TypeCode.UInt16: return a ^ (ushort)b;
       case TypeCode.UInt32: return a ^ (uint)b;
       case TypeCode.UInt64: return (ulong)a ^ (ulong)b;
-      default: throw Ops.TypeError("invalid operand types for ^: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().LongBitwiseXor(a, b);
     }
   }
 
@@ -184,7 +184,7 @@ public sealed class LongOps
         if(a<0) return -1;
         cv = (long)((ulong)a - (ulong)b);
         break;
-      default: throw Ops.TypeError("can't compare types: {0} and {1}", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().LongCompare(a, b);
     }
     return cv<0 ? -1 : cv>0 ? 1 : 0;
   }
@@ -236,7 +236,8 @@ public sealed class LongOps
           return floor ? IntegerOps.FloorDivide(new Integer(a), b) : IntegerOps.Divide(new Integer(a), b);
         else { bv = (long)v; break; }
       }
-      default: throw Ops.TypeError("invalid operand types for /: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default:
+        return floor ? Ops.GetCurrentLanguage().LongFloorDivide(a, b) : Ops.GetCurrentLanguage().LongDivide(a, b);
     }
 
     if(bv==0) throw new DivideByZeroException("floor division by zero");
@@ -281,7 +282,7 @@ public sealed class LongOps
         shift = (int)ul;
         break;
       }
-      default: throw Ops.TypeError("invalid operand types for <<: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().LongLeftShift(a, b);
     }
 
     if(shift<0) throw Ops.ValueError("negative shift count");
@@ -332,7 +333,7 @@ public sealed class LongOps
         else bv = (long)ul;
         break;
       }
-      default: throw Ops.TypeError("invalid operand types for %: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().LongModulus(a, b);
     }
     if(bv==0) throw new DivideByZeroException("modulus by zero");
     return Reduce(a%bv);
@@ -363,7 +364,7 @@ public sealed class LongOps
           if(ul>(ulong)int.MaxValue) return new Integer(a)*ul;
           return checked(a * (long)ul);
         }
-        default: throw Ops.TypeError("invalid operand types for *: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+        default: return Ops.GetCurrentLanguage().LongMultiply(a, b);
       }
     }
     catch(OverflowException) { return IntegerOps.Multiply(new Integer(a), b); }
@@ -405,8 +406,7 @@ public sealed class LongOps
         bv = (long)v;
         break;
       }
-      default:
-        throw Ops.TypeError("invalid operand types for **: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().LongPower(a, b);
     }
 
     if(bv<0) return Math.Pow(a, bv);
@@ -463,7 +463,7 @@ public sealed class LongOps
           if(ul>(ulong)long.MaxValue) return IntegerOps.Reduce(new Integer(a)-ul);
           ret = checked(a - (long)ul); break;
         }
-        default: throw Ops.TypeError("invalid operand types for -: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+        default: return Ops.GetCurrentLanguage().LongSubtract(a, b);
       }
       return Reduce(ret);
     }
@@ -502,7 +502,7 @@ public sealed class LongOps
         shift = (int)ul;
         break;
       }
-      default: throw Ops.TypeError("invalid operand types for >>return shift>31 ? 0 : a>>shift;: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().LongRightShift(a, b);
     }
 
     if(shift<0) throw Ops.ValueError("negative shift count");

@@ -60,6 +60,7 @@ public class ScriptCodeAttribute : Attribute
   public readonly string Code;
   public readonly Language Language;
   public RunAt RunAt;
+  public int Order;
 }
 
 public class ScriptNameAttribute : Attribute
@@ -146,6 +147,129 @@ public abstract class Language
   public virtual MemberContainer Builtins { get { return null; } }
   public virtual string BuiltinsNamespace { get { return null; } }
   public abstract string Name { get; }
+
+  #region Ops
+  #region Standard ops
+  public virtual object Add(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for +: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object BitwiseAnd(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for &: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object BitwiseOr(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for |: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object BitwiseNegate(object a)
+  { throw Ops.TypeError("unsupported operand type for ~: '{0}'", Ops.TypeName(a));
+  }
+  public virtual object BitwiseXor(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for ^: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual int Compare(object a, object b)
+  { throw Ops.TypeError("can't compare types: {0} and {1}", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object Divide(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for /: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object FloorDivide(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for //: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object LeftShift(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for <<: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object Modulus(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for %: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object Multiply(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for *: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object Negate(object a)
+  { throw Ops.TypeError("unsupported operand type for unary -: '{0}'", Ops.TypeName(a));
+  }
+  public virtual object Power(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for **: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object RightShift(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for >>: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  public virtual object Subtract(object a, object b)
+  { throw Ops.TypeError("unsupported operand types for -: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  }
+  #endregion
+  
+  #region Complex ops
+  public virtual object ComplexAdd(Complex a, object b) { return Add(a, b); }
+  public virtual object ComplexDivide(Complex a, object b) { return Divide(a, b); }
+  public virtual object ComplexMultiply(Complex a, object b) { return Multiply(a, b); }
+  public virtual object ComplexPower(Complex a, object b) { return Power(a, b); }
+  public virtual object ComplexSubtract(Complex a, object b) { return Subtract(a, b); }
+  #endregion
+  
+  #region Float ops
+  public virtual object FloatAdd(double a, object b) { return Add(a, b); }
+  public virtual int FloatCompare(double a, object b) { return Compare(a, b); }
+  public virtual object FloatDivide(double a, object b) { return Divide(a, b); }
+  public virtual object FloatFloorDivide(double a, object b) { return FloorDivide(a, b); }
+  public virtual object FloatModulus(double a, object b) { return Modulus(a, b); }
+  public virtual object FloatMultiply(double a, object b) { return Multiply(a, b); }
+  public virtual object FloatPower(double a, object b) { return Power(a, b); }
+  public virtual object FloatSubtract(double a, object b) { return Subtract(a, b); }
+  #endregion
+
+  #region Integer ops
+  public virtual object IntegerAdd(Integer a, object b) { return Add(a, b); }
+  public virtual object IntegerBitwiseAnd(Integer a, object b) { return BitwiseAnd(a, b); }
+  public virtual object IntegerBitwiseOr(Integer a, object b) { return BitwiseOr(a, b); }
+  public virtual object IntegerBitwiseNegate(Integer a) { return BitwiseNegate(a); }
+  public virtual object IntegerBitwiseXor(Integer a, object b) { return BitwiseXor(a, b); }
+  public virtual int IntegerCompare(Integer a, object b) { return Compare(a, b); }
+  public virtual object IntegerDivide(Integer a, object b) { return Divide(a, b); }
+  public virtual object IntegerFloorDivide(Integer a, object b) { return FloorDivide(a, b); }
+  public virtual object IntegerLeftShift(Integer a, object b) { return LeftShift(a, b); }
+  public virtual object IntegerModulus(Integer a, object b) { return Modulus(a, b); }
+  public virtual object IntegerMultiply(Integer a, object b) { return Multiply(a, b); }
+  public virtual object IntegerNegate(Integer a) { return Negate(a); }
+  public virtual object IntegerPower(Integer a, object b) { return Power(a, b); }
+  public virtual object IntegerRightShift(Integer a, object b) { return RightShift(a, b); }
+  public virtual object IntegerSubtract(Integer a, object b) { return Subtract(a, b); }
+  #endregion
+
+  #region Int ops
+  public virtual object IntAdd(int a, object b) { return Add(a, b); }
+  public virtual object IntBitwiseAnd(int a, object b) { return BitwiseAnd(a, b); }
+  public virtual object IntBitwiseOr(int a, object b) { return BitwiseOr(a, b); }
+  public virtual object IntBitwiseNegate(int a) { return BitwiseNegate(a); }
+  public virtual object IntBitwiseXor(int a, object b) { return BitwiseXor(a, b); }
+  public virtual int IntCompare(int a, object b) { return Compare(a, b); }
+  public virtual object IntDivide(int a, object b) { return Divide(a, b); }
+  public virtual object IntFloorDivide(int a, object b) { return FloorDivide(a, b); }
+  public virtual object IntLeftShift(int a, object b) { return LeftShift(a, b); }
+  public virtual object IntModulus(int a, object b) { return Modulus(a, b); }
+  public virtual object IntMultiply(int a, object b) { return Multiply(a, b); }
+  public virtual object IntNegate(int a) { return Negate(a); }
+  public virtual object IntPower(int a, object b) { return Power(a, b); }
+  public virtual object IntRightShift(int a, object b) { return RightShift(a, b); }
+  public virtual object IntSubtract(int a, object b) { return Subtract(a, b); }
+  #endregion
+
+  #region Long ops
+  public virtual object LongAdd(long a, object b) { return Add(a, b); }
+  public virtual object LongBitwiseAnd(long a, object b) { return BitwiseAnd(a, b); }
+  public virtual object LongBitwiseOr(long a, object b) { return BitwiseOr(a, b); }
+  public virtual object LongBitwiseNegate(long a) { return BitwiseNegate(a); }
+  public virtual object LongBitwiseXor(long a, object b) { return BitwiseXor(a, b); }
+  public virtual int LongCompare(long a, object b) { return Compare(a, b); }
+  public virtual object LongDivide(long a, object b) { return Divide(a, b); }
+  public virtual object LongFloorDivide(long a, object b) { return FloorDivide(a, b); }
+  public virtual object LongLeftShift(long a, object b) { return LeftShift(a, b); }
+  public virtual object LongModulus(long a, object b) { return Modulus(a, b); }
+  public virtual object LongMultiply(long a, object b) { return Multiply(a, b); }
+  public virtual object LongNegate(long a) { return Negate(a); }
+  public virtual object LongPower(long a, object b) { return Power(a, b); }
+  public virtual object LongRightShift(long a, object b) { return RightShift(a, b); }
+  public virtual object LongSubtract(long a, object b) { return Subtract(a, b); }
+  #endregion
+  #endregion
 
   public virtual bool EmitConstant(CodeGenerator cg, object value) { return false; }
 
@@ -573,7 +697,6 @@ public sealed class AST
        within TryNodes
     3. Ensures that bare throw forms only occur within a catch block
     4. Resolves references to all names used within the function
-    5. Ensures that global variable declarations only occur at global scope
   */
   sealed class NodeDecorator : IWalker
   { public NodeDecorator(LambdaNode top)
@@ -589,7 +712,9 @@ public sealed class AST
         throw Ops.SyntaxError(node, "An interrupt node is not valid within a try block.");
 
       if(node is LambdaNode)
-      { LambdaNode oldFunc = func;
+      { foreach(Parameter p in func.Parameters) if(p.Default!=null) p.Default.Walk(this);
+
+        LambdaNode oldFunc = func;
         TryNode oldTry = inTry;
         bool oldCatch  = inCatch;
         func    = (LambdaNode)node;
@@ -709,13 +834,7 @@ public sealed class AST
     }
 
     public void PostWalk(Node node)
-    { if(node is DefineNode)
-      { DefineNode def = (DefineNode)node;
-        // TODO: uncomment later? relax the restriction on global variables being unable to be declared within functions?
-        if(def.InFunc==top/* || def.InFunc is ModuleNode*/) def.InFunc = null;
-        else if(def.InFunc!=null) throw Ops.SyntaxError(node, "define: only allowed at toplevel scope");
-      }
-      else if(top!=null) // compiled code only
+    { if(top!=null) // compiled code only
       { if(node is LocalBindNode)
         { LocalBindNode let = (LocalBindNode)node;
           int len=let.Names.Length, start=bound.Count-len;
@@ -1627,67 +1746,6 @@ public abstract class DebugNode : Node
 }
 #endregion
 
-#region DefineNode
-public sealed class DefineNode : Node
-{ public DefineNode(string name, Node value) : this(name, value, false) { }
-  public DefineNode(string name, Node value, bool forceRebind)
-  { Name=new Name(name, Name.Global); Value=value; ForceRebind=forceRebind;
-    LambdaNode lambda = value as LambdaNode;
-    if(lambda!=null && lambda.Name!=null) lambda.Name = name;
-  }
-
-  public override void Emit(CodeGenerator cg, ref Type etype)
-  { Debug.Assert(InFunc==null);
-    cg.MarkPosition(this);
-    cg.Namespace.GetSlot(Name); // side effect of creating the global binding
-
-    Slot tmp;
-    if(etype!=typeof(void) || Value.ClearsStack)
-    { Value.Emit(cg);
-      tmp = cg.AllocLocalTemp(typeof(object));
-      tmp.EmitSet(cg);
-    }
-    else tmp = null;
-
-    cg.EmitTopLevel();
-    cg.EmitString(Name.String);
-    if(tmp==null) Value.Emit(cg);
-    else tmp.EmitGet(cg);
-    cg.EmitCall(typeof(TopLevel), ForceRebind ? "Bind" : "Set", typeof(string), typeof(object));
-
-    if(tmp!=null)
-    { if(etype!=typeof(void)) { tmp.EmitGet(cg); etype = typeof(object); }
-      cg.FreeLocalTemp(tmp);
-    }
-
-    TailReturn(cg);
-  }
-
-  public override object Evaluate()
-  { Debug.Assert(InFunc==null);
-    object value = Value.Evaluate();
-    TopLevel.Current.Bind(Name.String, value);
-    return value;
-  }
-
-  public override void MarkTail(bool tail) { Tail = tail; Value.MarkTail(false); }
-
-  public override void SetFlags()
-  { ClearsStack = Value.ClearsStack;
-    Interrupts  = Value.Interrupts;
-  }
-
-  public override void Walk(IWalker w)
-  { if(w.Walk(this)) Value.Walk(w);
-    w.PostWalk(this);
-  }
-
-  public readonly Name Name;
-  public readonly Node Value;
-  public readonly bool ForceRebind;
-}
-#endregion
-
 #region DeleteNode
 public class DeleteNode : Node
 { public DeleteNode(Node node) { Node=node; }
@@ -2141,7 +2199,7 @@ public sealed class LambdaNode : Node
       if(!cg.TypeGenerator.GetNamedConstant("template"+index, typeof(Template), out tmpl))
       { CodeGenerator icg = cg.TypeGenerator.GetInitializer();
         icg.ILG.Emit(OpCodes.Ldftn, (MethodInfo)impl.MethodBase);
-        icg.EmitLanguage(Options.Current.Language);
+        icg.EmitLanguage(Ops.GetCurrentLanguage());
         icg.EmitString(Name!=null ? Name : Binding!=null ? Binding.String : null);
         icg.EmitConstantObject(Parameter.GetNames(Parameters));
         icg.EmitInt(NumRequired);
@@ -2193,7 +2251,7 @@ public sealed class LambdaNode : Node
   }
 
   public readonly Parameter[] Parameters;
-  public readonly Node Body;
+  public Node Body;
   public Name Binding;
   public string Name;
   public Label StartLabel;
@@ -2259,22 +2317,6 @@ public sealed class LambdaNode : Node
   }
 
   static Index lindex = new Index();
-}
-#endregion
-
-#region LastNode
-public sealed class LastNode : Node
-{ public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(etype!=typeof(void))
-    { cg.EmitFieldGet(typeof(Ops), "LastPtr");
-      etype = typeof(object);
-      TailReturn(cg);
-    }
-  }
-
-  public override object Evaluate() { return Ops.LastPtr; }
-  public override Type GetNodeType() { return typeof(object); }
-  public override void Walk(IWalker w) { if(w.Walk(this)) w.PostWalk(this); }
 }
 #endregion
 
@@ -2407,11 +2449,10 @@ public sealed class MarkSourceNode : DebugNode
 }
 #endregion
 
-// FIXME: unify handling of multiple member gets (eg, Evaluate() doesn't support it), and it may not be safe to
-// do if MemberContainer.SetSlot() works.
-// TODO: maybe allow MemberNode to use GetValue as well as GetSlot
+// dotted names are only supported if 'members' is a constant value (members.IsConstant is true). otherwise, 'members'
+// must evaluate to a non-dotted string
 #region MemberNode
-public sealed class MemberNode : Node
+public class MemberNode : Node
 { public MemberNode(Node value, Node members) : this(value, members, true) { }
   public MemberNode(Node value, Node members, bool enableCache)
   { Value=value; Members=members; EnableCache=enableCache;
@@ -2455,8 +2496,7 @@ public sealed class MemberNode : Node
         cache.EmitGetAddr(cg);
         cg.EmitFieldGet(typeof(MemberCache), "Type");
         cg.ILG.Emit(OpCodes.Bne_Un_S, miss);
-        tmp.EmitGet(cg);
-        cg.EmitFieldSet(typeof(Ops), "LastPtr"); // this is not exactly the same as the way it works below...
+        HandleThisPtr(cg, tmp);
         cache.EmitGetAddr(cg);
         cg.EmitFieldGet(typeof(MemberCache), "Value");
         cg.ILG.Emit(OpCodes.Br, done);
@@ -2472,10 +2512,7 @@ public sealed class MemberNode : Node
       }
 
       for(int i=0; i<bits.Length; i++)
-      { if(i==bits.Length-1)
-        { cg.ILG.Emit(OpCodes.Dup);
-          cg.EmitFieldSet(typeof(Ops), "LastPtr");
-        }
+      { if(i==bits.Length-1) HandleThisPtr(cg);
         cg.EmitCall(typeof(MemberContainer), "FromObject");
         cg.EmitString(bits[i]);
         cg.EmitCall(typeof(MemberContainer), "GetSlot", typeof(string));
@@ -2494,6 +2531,7 @@ public sealed class MemberNode : Node
     }
     else
     { Slot tmp1, tmp2;
+      HandleThisPtr(cg);
       if(Members is TryNode)
       { tmp1 = cg.AllocLocalTemp(typeof(object), Members.Interrupts);
         tmp1.EmitSet(cg);
@@ -2517,7 +2555,9 @@ public sealed class MemberNode : Node
 
   public override object Evaluate()
   { object value = Value.Evaluate();
-    foreach(string bit in Ops.ExpectString(Members.Evaluate()).Split('.')) value = Ops.GetSlot(value, bit);
+    string str = Ops.ExpectString(Members.Evaluate());
+    if(!Members.IsConstant) value = Ops.GetSlot(value, str);
+    else foreach(string bit in str.Split('.')) value = Ops.GetSlot(value, bit);
     return value;
   }
 
@@ -2539,6 +2579,9 @@ public sealed class MemberNode : Node
   public readonly Node Value, Members;
   public CachePromise Cache;
   public readonly bool EnableCache;
+  
+  protected virtual void HandleThisPtr(CodeGenerator cg) { } // the 'this' pointer is on the stack but must be preserved
+  protected virtual void HandleThisPtr(CodeGenerator cg, Slot slot) { } // the 'this' pointer is in the slot
 }
 #endregion
 
@@ -2585,10 +2628,16 @@ public sealed class RestartNode : JumpNode
 #endregion
 
 #region SetNode
+public enum SetType { Alter, Bind, Set }
+
 public class SetNode : Node
-{ public SetNode(Node lhs, Node rhs) : this(new Node[] { lhs }, rhs) { }
-  public SetNode(Node[] lhs, Node rhs) { LHS=lhs; RHS=rhs; }
-  
+{ public SetNode(string variable, Node rhs) : this(new VariableNode(variable), rhs) { }
+  public SetNode(string variable, Node rhs, SetType type) : this(new VariableNode(variable), rhs, type) { }
+  public SetNode(Node lhs, Node rhs) : this(new Node[] { lhs }, rhs) { }
+  public SetNode(Node lhs, Node rhs, SetType type) : this(new Node[] { lhs }, rhs, type) { }
+  public SetNode(Node[] lhs, Node rhs) : this(lhs, rhs, SetType.Alter) { }
+  public SetNode(Node[] lhs, Node rhs, SetType type) { LHS=lhs; RHS=rhs; Type=type; }
+
   public override void Emit(CodeGenerator cg, ref Type etype)
   { cg.MarkPosition(this);
 
@@ -2647,12 +2696,19 @@ public class SetNode : Node
 
   public readonly Node[] LHS;
   public readonly Node RHS;
+  public readonly SetType Type;
 
   protected virtual void Assign(Node lhs, object value)
   { if(lhs is VariableNode)
     { VariableNode vn = (VariableNode)lhs;
       InterpreterEnvironment cur = InterpreterEnvironment.Current;
-      if(vn.Name.Depth==Name.Global || cur==null) TopLevel.Current.Set(vn.Name.String, value);
+      if(vn.Name.Depth==Name.Global || cur==null)
+      { switch(Type)
+        { case SetType.Alter: TopLevel.Current.Alter(vn.Name.String, value); break;
+          case SetType.Bind: TopLevel.Current.Bind(vn.Name.String, value); break;
+          case SetType.Set: TopLevel.Current.Set(vn.Name.String, value); break;
+        }
+      }
       else cur.Set(vn.Name.String, value);
     }
     else throw UnhandledNodeType(lhs);
@@ -2661,8 +2717,19 @@ public class SetNode : Node
   protected virtual void EmitSet(CodeGenerator cg, Node lhs, Type onStack)
   { if(lhs is VariableNode)
     { VariableNode vn = (VariableNode)lhs;
-      EmitStrictConvert(cg, onStack, vn.GetNodeType());
-      cg.EmitSet(vn.Name);
+      if(Type==SetType.Alter || vn.Name.Depth!=Name.Global)
+      { EmitStrictConvert(cg, onStack, vn.GetNodeType());
+        cg.EmitSet(vn.Name);
+      }
+      else
+      { Slot tmp = cg.AllocLocalTemp(typeof(object));
+        tmp.EmitSet(cg);
+        cg.EmitTopLevel();
+        cg.EmitString(vn.Name.String);
+        tmp.EmitGet(cg);
+        cg.EmitCall(typeof(TopLevel), Type==SetType.Set ? "Set" : "Bind", typeof(string), typeof(object));
+        cg.FreeLocalTemp(tmp);
+      }
     }
     else throw UnhandledNodeType(lhs);
   }

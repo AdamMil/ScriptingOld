@@ -52,7 +52,7 @@ public sealed class IntegerOps
       case TypeCode.UInt16: ret = a + (ushort)b; break;
       case TypeCode.UInt32: ret = a + (uint)b; break;
       case TypeCode.UInt64: ret = a + (ulong)b; break;
-      default: throw Ops.TypeError("invalid operand types for +: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().IntegerAdd(a, b);
     }
     return Reduce(ret);
   }
@@ -103,7 +103,7 @@ public sealed class IntegerOps
       case TypeCode.UInt16: ret = a & (ushort)b; break;
       case TypeCode.UInt32: ret = a & (uint)b; break;
       case TypeCode.UInt64: ret = a & (ulong)b; break;
-      default: throw Ops.TypeError("invalid operand types for &: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default:  return Ops.GetCurrentLanguage().IntegerBitwiseAnd(a, b);
     }
     return Reduce(ret);
   }
@@ -124,7 +124,7 @@ public sealed class IntegerOps
       case TypeCode.UInt32: return a | (uint)b;
       case TypeCode.UInt64: return a | (ulong)b;
     }
-    throw Ops.TypeError("invalid operand types for |: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+     return Ops.GetCurrentLanguage().IntegerBitwiseOr(a, b);
   }
 
   public static object BitwiseXor(Integer a, object b)
@@ -144,7 +144,7 @@ public sealed class IntegerOps
       case TypeCode.UInt32: return a ^ (uint)b;
       case TypeCode.UInt64: return a ^ (ulong)b;
     }
-    throw Ops.TypeError("invalid operand types for ^: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+     return Ops.GetCurrentLanguage().IntegerBitwiseXor(a, b);
   }
 
   public static int Compare(Integer a, object b)
@@ -173,7 +173,7 @@ public sealed class IntegerOps
       case TypeCode.UInt32: return a.CompareTo((uint)b);
       case TypeCode.UInt64: return a.CompareTo((ulong)b);
     }
-    throw Ops.TypeError("can't compare types: {0} and {1}", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().IntegerCompare(a, b);
 
     dblcmp:
     double av=a.ToDouble();
@@ -201,7 +201,7 @@ public sealed class IntegerOps
       case TypeCode.UInt16: bv = new Integer((ushort)b); break;
       case TypeCode.UInt32: bv = new Integer((uint)b); break;
       case TypeCode.UInt64: bv = new Integer((ulong)b); break;
-      default: throw Ops.TypeError("invalid operand types for /: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().IntegerDivide(a, b);
     }
     if(bv.Sign==0) throw new DivideByZeroException("long division by zero");
 
@@ -234,7 +234,7 @@ public sealed class IntegerOps
       case TypeCode.UInt16: bv = new Integer((ushort)b); break;
       case TypeCode.UInt32: bv = new Integer((uint)b); break;
       case TypeCode.UInt64: bv = new Integer((ulong)b); break;
-      default: throw Ops.TypeError("invalid operand types for //: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().IntegerFloorDivide(a, b);
     }
     if(bv.Sign==0) throw new DivideByZeroException("long floor division by zero");
     return Reduce((a.Sign==-1 ? (a-bv+bv.Sign) : a) / bv);
@@ -269,7 +269,7 @@ public sealed class IntegerOps
         return a << (int)ul;
       }
     }
-    throw Ops.TypeError("invalid operand types for <<: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().IntegerLeftShift(a, b);
   }
 
   public static object Modulus(Integer a, object b)
@@ -298,7 +298,7 @@ public sealed class IntegerOps
       case TypeCode.UInt16: ret = a % (ushort)b; break;
       case TypeCode.UInt32: ret = a % (uint)b; break;
       case TypeCode.UInt64: ret = a % (ulong)b; break;
-      default: throw Ops.TypeError("invalid operand types for %: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().IntegerModulus(a, b);
     }
     return Reduce(ret);
   }
@@ -321,7 +321,7 @@ public sealed class IntegerOps
       case TypeCode.UInt32: return a * (uint)b;
       case TypeCode.UInt64: return a * (ulong)b;
     }
-    throw Ops.TypeError("invalid operand types for *: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+    return Ops.GetCurrentLanguage().IntegerMultiply(a, b);
   }
 
   public static object Power(Integer a, object b)
@@ -377,7 +377,7 @@ public sealed class IntegerOps
         bv = (long)v;
         break;
       }
-      default: throw Ops.TypeError("invalid operand types for **: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().IntegerPower(a, b);
     }
 
     if(bv<0) return Math.Pow(a.ToDouble(), bv);
@@ -447,7 +447,7 @@ public sealed class IntegerOps
       case TypeCode.UInt16: ret = a - (ushort)b; break;
       case TypeCode.UInt32: ret = a - (uint)b; break;
       case TypeCode.UInt64: ret = a - (ulong)b; break;
-      default: throw Ops.TypeError("invalid operand types for -: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().IntegerSubtract(a, b);
     }
     return Reduce(ret);
   }
@@ -485,7 +485,7 @@ public sealed class IntegerOps
         ret = a >> (int)ul;
         break;
       }
-      default: throw Ops.TypeError("invalid operand types for >>: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+      default: return Ops.GetCurrentLanguage().IntegerRightShift(a, b);
     }
     return Reduce(ret);
   }
