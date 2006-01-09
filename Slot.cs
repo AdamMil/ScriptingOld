@@ -31,12 +31,6 @@ namespace Scripting
 public abstract class Slot
 { public abstract Type Type { get; }
 
-  public virtual void EmitDelete(CodeGenerator cg)
-  { if(Type.IsValueType) cg.EmitZero(Type);
-    else cg.EmitFieldGet(typeof(Binding), "Unbound");
-    EmitSet(cg);
-  }
-
   public abstract void EmitGet(CodeGenerator cg);
   public abstract void EmitGetAddr(CodeGenerator cg);
 
@@ -75,11 +69,6 @@ public sealed class EnvironmentSlot : Slot
   public EnvironmentSlot(int depth, int index, Type type) { Depth=depth; Index=index; SlotType=type; }
 
   public override Type Type { get { return SlotType; } }
-
-  public override void EmitDelete(CodeGenerator cg)
-  { cg.EmitFieldGet(typeof(Binding), "Unbound");
-    EmitSet(cg);
-  }
 
   public override void EmitGet(CodeGenerator cg)
   { cg.EmitArgGet(0);
@@ -166,7 +155,6 @@ public sealed class FieldSlot : Slot
 public sealed class TopLevelSlot : Slot
 { public override Type Type { get { return typeof(TopLevel); } }
 
-  public override void EmitDelete(CodeGenerator cg) { throw new NotSupportedException(); }
   public override void EmitGet(CodeGenerator cg) { cg.EmitFieldGet(typeof(TopLevel), "Current"); }
   public override void EmitGetAddr(CodeGenerator cg) { cg.EmitFieldGetAddr(typeof(TopLevel), "Current"); }
   public override void EmitSet(CodeGenerator cg) { cg.EmitFieldSet(typeof(TopLevel), "Current"); }
@@ -196,12 +184,6 @@ public sealed class NamedFrameSlot : Slot
 { public NamedFrameSlot(Slot frame, string name) { Frame=frame; Name=name; }
 
   public override Type Type { get { return typeof(object); } }
-
-  public override void EmitDelete(CodeGenerator cg)
-  { Frame.EmitGet(cg);
-    cg.EmitString(Name);
-    cg.EmitCall(typeof(TopLevel), "Unbind");
-  }
 
   public override void EmitGet(CodeGenerator cg)
   { SetupBinding(cg);
@@ -265,7 +247,6 @@ public sealed class ThisSlot : Slot
 
   public override Type Type { get { return type; } }
 
-  public override void EmitDelete(CodeGenerator cg) { throw new NotSupportedException(); }
   public override void EmitGet(CodeGenerator cg) { cg.ILG.Emit(OpCodes.Ldarg_0); }
   public override void EmitGetAddr(CodeGenerator cg) { cg.ILG.Emit(OpCodes.Ldarga, 0); }
   public override void EmitSet(CodeGenerator cg) { cg.ILG.Emit(OpCodes.Starg, 0); }

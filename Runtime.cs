@@ -1040,7 +1040,7 @@ public sealed class Ops
     else { retValue = null; return false; }
   }
 
-  public static bool IsTrue(object obj) { return obj!=null && (!(obj is bool) || (bool)obj); }
+  public static bool IsTrue(object obj) { return GetCurrentLanguage().IsTrue(obj); }
 
   public static object LeftShift(object a, object b)
   { switch(Convert.GetTypeCode(a))
