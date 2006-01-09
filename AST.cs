@@ -28,6 +28,7 @@ using System.Reflection.Emit;
 // TODO: optimize compiler by caching methods, constructors, fields, properties, etc
 // TODO: optimize code generation by not creating temp slots to hold the value of a node that's just a local variable
 //       lookup
+// TODO: optimize by not using temporaries for constant expressions
 namespace Scripting
 {
 
@@ -272,6 +273,7 @@ public abstract class Language
   #endregion
 
   public virtual bool EmitConstant(CodeGenerator cg, object value) { return false; }
+  public virtual void EmitIsTrue(CodeGenerator cg) { cg.EmitCall(typeof(Language), "DefaultIsTrue"); }
 
   public virtual void EmitNewKeywordDict(CodeGenerator cg)
   { cg.EmitNew(typeof(System.Collections.Specialized.ListDictionary), Type.EmptyTypes);
@@ -408,6 +410,7 @@ public abstract class Language
 
   public virtual bool IsConstantFunction(string name) { return Array.BinarySearch(constants, name)>=0; }
   public virtual bool IsHashableConstant(object value) { return false; }
+  public virtual bool IsTrue(object value) { return DefaultIsTrue(value); }
 
   public virtual object PackArguments(object[] args, int start, int length)
   { if(start==0 && length==args.Length) return args;
@@ -452,6 +455,8 @@ public abstract class Language
   }
 
   public virtual string TypeName(Type type) { return type.FullName; }
+
+  public static bool DefaultIsTrue(object value) { return value!=null && (!(value is bool) || (bool)value); }
 
   readonly Index GenNames = new Index();
 
@@ -646,11 +651,58 @@ public sealed class AST
     1. Sets node flags by calling node.SetFlags() [from the leaves to the root]
     2. Calls node.Optimize() if optimization is enabled [from the leaves to the root]
     3. Creates shared CachePromise objects for equivalent MemberNodes
+    4. Sets the Parent fields of BlockNodes
+    5. Finds all jump nodes (BreakNode and RestartNode) within blocks and updates them with information about whether
+       they need to use the Leave opcode, etc.
+    6. Determines whether blocks have early exits (an exit that comes before the block's tail) or restarts.
   */
   sealed class CompileDecorator : IWalker
   { public CompileDecorator() { optimize = Options.Current.Optimize; }
 
-    public bool Walk(Node node) { return true; }
+    public bool Walk(Node node)
+    { if(node is JumpNode)
+      { JumpNode jn = (JumpNode)node;
+        if(blocks==null || blocks.Count==0) throw Ops.SyntaxError(jn, "break/continue found outside block");
+        int i;
+        for(i=blocks.Count-1; i>=0; i--)
+        { BlockNode block = (BlockNode)blocks[i];
+          if(block.Name==jn.Name)
+          { if(jn is RestartNode)
+            { RestartNode rn = (RestartNode)jn;
+              rn.NeedsLeave = rn.InTry!=block.InTry;
+              block.HasRestart = true;
+            }
+            else
+            { BreakNode bn = (BreakNode)jn;
+              bn.Block = block;
+
+              if(!bn.Tail)
+                while(true)
+                { block.HasEarlyExit = true;
+                  if(!block.Tail || block.Parent==null) break;
+                  block = block.Parent;
+                }
+
+              bn.NeedsLeave = bn.InTry!=block.InTry;
+            }
+            break;
+          }
+        }
+        if(i==-1) throw Ops.SyntaxError(jn, "undefined block: "+jn.Name);
+      }
+      else if(node is BlockNode)
+      { BlockNode bn = (BlockNode)node;
+        if(blocks==null) blocks = new ArrayList();
+        bn.Parent = blocks.Count==0 ? null : (BlockNode)blocks[blocks.Count-1];
+        blocks.Add(bn);
+      }
+      else if(node is LambdaNode)
+      { if(funcBlocks==null) funcBlocks = new Stack();
+        funcBlocks.Push(blocks);
+        blocks = null;
+      }
+      return true;
+    }
 
     public void PostWalk(Node node)
     { node.SetFlags();
@@ -672,6 +724,9 @@ public sealed class AST
           }
         }
       }
+
+      if(node is BlockNode) blocks.RemoveAt(blocks.Count-1);
+      else if(node is LambdaNode) blocks = (ArrayList)funcBlocks.Pop();
     }
 
     #region AccessKey
@@ -696,6 +751,8 @@ public sealed class AST
 
     Hashtable memberNodes;
     OptimizeType optimize;
+    ArrayList blocks;
+    Stack funcBlocks;
   }
   #endregion
 
@@ -1037,8 +1094,10 @@ public abstract class Node
     return value;
   }
 
+  // TODO: see if this and the related stuff can be implemented using CodeGenerator.EmitConvert
   protected static void EmitTryConvert(CodeGenerator cg, Type onStack, ref Type etype)
-  { if(onStack!=typeof(object) && !AreCompatible(onStack, etype))
+  { if(onStack==etype) return;
+    if(onStack!=typeof(object) && !AreCompatible(onStack, etype))
       throw new InvalidOperationException(string.Format("Type mismatch: {0} var and {1} etype", onStack, etype));
     else if(!etype.IsValueType)
     { if(!onStack.IsValueType) etype = typeof(object);
@@ -1098,40 +1157,58 @@ public sealed class AssertNode : WrapperNode
 
 #region BlockNode
 public sealed class BlockNode : WrapperNode
-{ public BlockNode(string name, Node body) : base(body) { Name=name; }
+{ public BlockNode(string name, Node body) : base(body) { Name = name; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { JumpFinder jf = new JumpFinder(this);
-    Walk(jf);
+  { if(!Tail || HasEarlyExit) Node.MarkTail(false); // undo the peculiarity in MarkTail()
 
-    if(!Tail || jf.HasEarlyExit) Node.MarkTail(false); // undo the peculiarity in MarkTail()
+    // TODO: optimize to allow non-object blocks, assuming all returns are compatible
+    Type returnType = etype==typeof(void) ? etype : typeof(object);
 
-    Label start = jf.HasRestart ? cg.ILG.DefineLabel() : new Label(),
-            end = jf.HasEarlyExit ? cg.ILG.DefineLabel() : new Label();
-    if(!jf.IsSimpleBlock) jf.UpdateNodes(start, end);
-
-    if(jf.HasEarlyExit)
+    bool hasReturnSlot = HasEarlyExit && etype!=typeof(void);
+    bool usingParent = false;
+    if(hasReturnSlot)
     { cg.ILG.Emit(OpCodes.Ldnull);
-      ReturnSlot = cg.AllocLocalTemp(typeof(object), Node.Interrupts);
-      ReturnSlot.EmitSet(cg);
+      if(Tail && Parent!=null)
+      { ReturnSlot = Parent.ReturnSlot;
+        usingParent = true;
+      }
+      else
+      { ReturnSlot = cg.AllocLocalTemp(typeof(object), Node.Interrupts);
+        ReturnSlot.EmitSet(cg);
+      }
     }
 
-    if(jf.HasRestart) cg.ILG.MarkLabel(start);
-    Type type = typeof(object); // TODO: optimize to allow non-object blocks, assuming all returns are compatible
-    Node.Emit(cg, ref etype);
-    if(!jf.HasEarlyExit)
-    { if(etype!=type && type==typeof(void)) { cg.ILG.Emit(OpCodes.Ldnull); etype=typeof(object); }
-      else etype = type;
+    if(HasRestart)
+    { StartLabel = cg.ILG.DefineLabel();
+      cg.ILG.MarkLabel(StartLabel);
+    }
+
+    if(usingParent) EndLabel = Parent.EndLabel;
+    else if(HasEarlyExit) EndLabel = cg.ILG.DefineLabel();
+
+    if(HasEarlyExit || HasRestart) Walk(new JumpFinder(this));
+
+    if(etype==typeof(void)) Node.EmitVoid(cg);
+    else Node.Emit(cg, ref etype);
+
+    if(etype!=returnType && returnType==typeof(void)) { cg.ILG.Emit(OpCodes.Ldnull); returnType=etype=typeof(object); }
+    else etype = returnType;
+
+    if(!hasReturnSlot)
+    { if(HasEarlyExit) cg.ILG.MarkLabel(EndLabel);
     }
     else
-    { if(type!=typeof(void)) ReturnSlot.EmitSet(cg);
-      cg.ILG.MarkLabel(end);
-      if(etype!=typeof(void)) { ReturnSlot.EmitGet(cg); etype=typeof(object); }
-      if(!Node.Interrupts) cg.FreeLocalTemp(ReturnSlot);
+    { if(!usingParent)
+      { ReturnSlot.EmitSet(cg);
+        cg.ILG.MarkLabel(EndLabel);
+        ReturnSlot.EmitGet(cg);
+        if(!Node.Interrupts) cg.FreeLocalTemp(ReturnSlot);
+      }
       ReturnSlot = null;
     }
-    
-    if(Tail && jf.HasEarlyExit) TailReturn(cg);
+
+    if(!Node.Tail) TailReturn(cg);
   }
 
   public override object Evaluate()
@@ -1144,70 +1221,43 @@ public sealed class BlockNode : WrapperNode
   public override Type GetNodeType() { return typeof(object); } // TODO: change after optimization above
 
   public override void MarkTail(bool tail)
-  { Node.MarkTail(true); // the tail is marked as true even when it's not to facilitate optimizing out simple blocks
+  { Node.MarkTail(true); // the body is marked as a tail even when it's not to facilitate optimizing out simple blocks
     Tail = tail;
   }
 
   public readonly string Name;
+  public BlockNode Parent;
   public Slot ReturnSlot;
+  public Label StartLabel, EndLabel;
+  public bool HasRestart, HasEarlyExit;
 
   #region JumpFinder
   /* This walker performs the following tasks:
-    1. Find all jump nodes (BreakNode and RestartNode) within a block. If the jump node matches names the block, the
-       jump node is updated with a pointer to the block and info about whether it's within a TryNode.
-    2. Determines whether the block has an early exit (an exit that comes before the block's tail) or a restart.
-    3. Provides a method (UpdateNodes) to assign Labels to the jump nodes that were found, to which they'll jump.
+    1. Assign labels to jump nodes that reference this block
+    2. Assigns to the BreakNode.Block field for BreakNodes that reference this block
   */
   sealed class JumpFinder : IWalker
   { public JumpFinder(BlockNode block) { this.block=block; }
 
-    public bool IsSimpleBlock { get { return !HasEarlyExit && !HasRestart; } }
-
-    public void PostWalk(Node node) { if(node is TryNode) inTry--; }
-
     public bool Walk(Node node)
     { if(node is BreakNode)
       { BreakNode bn = (BreakNode)node;
-        if(bn.Name==block.Name)
-        { bn.NeedsLeave = InTry;
-          bn.Block = block;
-          if(!bn.Tail) HasEarlyExit = true;
-          if(nodes==null) nodes = new ArrayList();
-          nodes.Add(bn);
+        if(block.Name==bn.Name)
+        { bn.Block = block;
+          bn.Label = block.EndLabel;
         }
       }
       else if(node is RestartNode)
       { RestartNode rn = (RestartNode)node;
-        if(rn.Name==block.Name)
-        { rn.NeedsLeave = InTry;
-          HasRestart = true;
-          if(nodes==null) nodes = new ArrayList();
-          nodes.Add(rn);
-        }
+        if(block.Name==rn.Name) rn.Label = block.StartLabel;
       }
       else if(node is LambdaNode) return false;
-      else if(node is TryNode) inTry++;
       return true;
     }
 
-    public void UpdateNodes(Label start, Label end)
-    { if(nodes!=null)
-      { foreach(Node n in nodes)
-        { BreakNode bn = n as BreakNode;
-          if(bn!=null) bn.Label = end;
-          else ((RestartNode)n).Label = start;
-        }
-        nodes = null;
-      }
-    }
-
-    public bool HasEarlyExit, HasRestart;
-
-    bool InTry { get { return inTry>0; } }
+    public void PostWalk(Node node) { }
 
     readonly BlockNode block;
-    ArrayList nodes;
-    int inTry;
   }
   #endregion
 }
@@ -1267,7 +1317,7 @@ public sealed class BodyNode : Node
 #region BreakNode
 public sealed class BreakNode : JumpNode
 { public BreakNode(string name) : base(name) { }
-  public BreakNode(string name, Node returnValue) : base(name) { Return=returnValue; }
+  public BreakNode(string name, Node returnValue) : base(name) { Return = returnValue; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(Return==null) base.Emit(cg, ref etype);
@@ -2055,7 +2105,9 @@ public sealed class IfNode : Node
   public IfNode(Node test, Node iftrue, Node iffalse) { Test=test; IfTrue=iftrue; IfFalse=iffalse; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(IsConstant)
+  { cg.MarkPosition(this);
+
+    if(IsConstant)
     { EmitConstant(cg, Evaluate(), ref etype);
       TailReturn(cg);
     }
@@ -2068,50 +2120,71 @@ public sealed class IfNode : Node
       }
     }
     else
-    { Type truetype=IfTrue.GetNodeType(), falsetype = IfFalse==null ? null : IfFalse.GetNodeType();
+    { Node ifTrue=IfTrue, ifFalse=IfFalse;
+
+      bool trueJump = false;
+      if(Options.Current.OptimizeAny)
+      { if(ifTrue is JumpNode && !((JumpNode)ifTrue).NeedsLeave) trueJump = true;
+        else if(ifFalse!=null && ifFalse is JumpNode && !((JumpNode)ifFalse).NeedsLeave)
+        { Node t=ifTrue; ifTrue=ifFalse; ifFalse=t;
+          trueJump = true;
+        }
+      }
+
+      Type truetype=ifTrue.GetNodeType(), falsetype = ifFalse==null ? null : ifFalse.GetNodeType();
       if(etype==typeof(void)) truetype = falsetype = typeof(void);
-      else if((IfFalse==null || truetype==falsetype) && AreCompatible(truetype, etype)) etype = falsetype = truetype;
-      else if(truetype==typeof(void) && (IfFalse==null || falsetype==typeof(void)))
+      else if((ifFalse==null || truetype==falsetype) && AreCompatible(truetype, etype)) etype = falsetype = truetype;
+      else if(truetype==typeof(void) && (ifFalse==null || falsetype==typeof(void)))
       { falsetype = typeof(void);
         etype = typeof(object);
       }
       else truetype = falsetype = etype = typeof(object);
 
-      bool hasEnd = !IfTrue.Tail && (IfFalse!=null || truetype!=typeof(void));
-      Label endlbl=hasEnd ? cg.ILG.DefineLabel() : new Label(), falselbl=cg.ILG.DefineLabel();
-
-      cg.MarkPosition(this);
+      bool hasEnd = !ifTrue.Tail && (ifFalse!=null || truetype!=typeof(void));
+      Label endlbl=hasEnd ? cg.ILG.DefineLabel() : new Label(), falselbl=trueJump ? new Label() : cg.ILG.DefineLabel();
 
       Type type = typeof(bool);
       Test.Emit(cg, ref type);
-      if(type==typeof(bool)) cg.ILG.Emit(OpCodes.Brfalse, falselbl);
-      else if(type==typeof(CodeGenerator.negbool)) cg.ILG.Emit(OpCodes.Brtrue, falselbl);
+      if(trueJump) // a peephole optimization for "if(cond) goto label;" to avoid an ugly IL sequence
+      { JumpNode jn = (JumpNode)ifTrue;
+        if(type==typeof(bool)) cg.ILG.Emit(OpCodes.Brtrue, jn.Label);
+        else if(type==typeof(CodeGenerator.negbool)) cg.ILG.Emit(OpCodes.Brfalse, jn.Label);
+        else
+        { cg.EmitIsTrue();
+          cg.ILG.Emit(OpCodes.Brtrue, jn.Label);
+        }
+      }
       else
-      { cg.EmitIsTrue();
-        cg.ILG.Emit(OpCodes.Brfalse, falselbl);
+      { if(type==typeof(bool)) cg.ILG.Emit(OpCodes.Brfalse, falselbl);
+        else if(type==typeof(CodeGenerator.negbool)) cg.ILG.Emit(OpCodes.Brtrue, falselbl);
+        else
+        { cg.EmitIsTrue();
+          cg.ILG.Emit(OpCodes.Brfalse, falselbl);
+        }
+
+        if(truetype==typeof(void)) ifTrue.EmitVoid(cg);
+        else
+        { ifTrue.Emit(cg, ref truetype);
+          Debug.Assert(AreCompatible(truetype, etype));
+        }
       }
 
-      if(truetype==typeof(void)) IfTrue.EmitVoid(cg);
-      else
-      { IfTrue.Emit(cg, ref truetype);
-        Debug.Assert(AreCompatible(truetype, etype));
-      }
       if(hasEnd) cg.ILG.Emit(OpCodes.Br, endlbl);
-      cg.ILG.MarkLabel(falselbl);
-      
-      if(IfFalse!=null || truetype!=typeof(void))
+      if(!trueJump) cg.ILG.MarkLabel(falselbl);
+
+      if(ifFalse!=null || truetype!=typeof(void))
       { if(falsetype==typeof(void))
-        { if(IfFalse!=null) IfFalse.EmitVoid(cg);
+        { if(ifFalse!=null) ifFalse.EmitVoid(cg);
         }
         else
-        { cg.EmitNode(IfFalse, ref falsetype);
+        { cg.EmitNode(ifFalse, ref falsetype);
           Debug.Assert(AreCompatible(falsetype, etype));
-          if(IfFalse==null && IfTrue.Tail) TailReturn(cg);
+          if(ifFalse==null && ifTrue.Tail) TailReturn(cg);
         }
         if(hasEnd) cg.ILG.MarkLabel(endlbl);
       }
       if(truetype==typeof(void) && etype!=typeof(void)) cg.ILG.Emit(OpCodes.Ldnull);
-      if(!IfTrue.Tail) TailReturn(cg);
+      if(!ifTrue.Tail) TailReturn(cg);
     }
   }
 
@@ -2178,6 +2251,7 @@ public abstract class JumpNode : Node
   public JumpNode(Label label) { Label=label; }
   public JumpNode(Label label, bool needsLeave) { Label=label; NeedsLeave=needsLeave; }
 
+  // note that IfNode makes assumptions about this
   public override void Emit(CodeGenerator cg, ref Type etype)
   { cg.ILG.Emit(NeedsLeave ? OpCodes.Leave : OpCodes.Br, Label);
     etype = typeof(void);

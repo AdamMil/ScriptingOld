@@ -43,12 +43,12 @@ public abstract class Namespace
   public void DeleteSlot(Name name)
   { Slot slot = (Slot)slots[name];
     if(slot==null)
-    { if(Parent==null) throw new ArgumentException("Slot "+name.String+" does not exist");
-      else Parent.DeleteSlot(name);
+    { if(Parent!=null) Parent.DeleteSlot(name);
+      else EmitDelete(name, null);
     }
     else
-    { if(name.Depth==Name.Local && slot is LocalSlot) codeGen.FreeLocalTemp(slot);
-      else EmitDelete(name, slot);
+    { EmitDelete(name, slot);
+      if(name.Depth==Name.Local && slot is LocalSlot) codeGen.FreeLocalTemp(slot);
       slots.Remove(name);
     }
   }
@@ -79,7 +79,14 @@ public abstract class Namespace
 
   public Namespace Parent;
 
-  protected virtual void EmitDelete(Name name, Slot slot) { slot.EmitDelete(codeGen); }
+  protected virtual void EmitDelete(Name name, Slot slot)
+  { if(slot!=null)
+    { if(slot.Type.IsValueType) codeGen.EmitZero(slot.Type);
+      else codeGen.EmitFieldGet(typeof(Binding), "Unbound");
+      slot.EmitSet(codeGen);
+    }
+  }
+
   protected abstract Slot MakeSlot(Name name);
 
   protected HybridDictionary slots = new HybridDictionary();
@@ -104,6 +111,11 @@ public sealed class TopLevelNamespace : Namespace
 
   protected override void EmitDelete(Name name, Slot slot)
   { TopSlot.EmitGet(codeGen);
+    codeGen.EmitString(name.String);
+    codeGen.EmitFieldGet(typeof(Binding), "Unbound");
+    codeGen.EmitCall(typeof(TopLevel), "Set");
+
+    TopSlot.EmitGet(codeGen);
     codeGen.EmitString(name.String);
     codeGen.EmitCall(typeof(TopLevel), "Unbind");
   }

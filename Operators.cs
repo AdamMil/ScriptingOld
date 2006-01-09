@@ -75,6 +75,7 @@ public abstract class Operator
   public static readonly BinaryOperator BitwiseOr = new BitwiseOrOperator();
   public static readonly BinaryOperator BitwiseXor = new BitwiseXorOperator();
 
+  public static readonly Operator Compare = new CompareOperator();
   public static readonly Operator LogicalAnd = new LogicalAndOperator();
   public static readonly Operator LogicalOr = new LogicalOrOperator();
 }
@@ -131,11 +132,8 @@ public sealed class LogicalNotOperator : UnaryOperator
     node.Emit(cg, ref type);
 
     if(etype==typeof(bool))
-    { if(type==typeof(bool)) etype = typeof(CodeGenerator.negbool);
-      else
-      { cg.EmitIsFalse(type);
-        etype = typeof(bool);
-      }
+    { if(type!=typeof(bool)) cg.EmitIsTrue(type);
+      etype = typeof(CodeGenerator.negbool);
     }
     else
     { if(type!=typeof(bool) && type!=typeof(CodeGenerator.negbool)) cg.EmitIsTrue(type);
@@ -166,6 +164,32 @@ public sealed class UnaryMinusOperator : UnaryOperator
 #endregion
 
 #region Comparison Operators
+#region CompareOperator
+public sealed class CompareOperator : Operator
+{ public CompareOperator() : base("comparison", 2, 2) { }
+
+  public override void Emit(string name, CodeGenerator cg, ref Type etype, params Node[] args)
+  { CheckArity(name, args);
+    if(etype==typeof(void)) cg.EmitVoids(args);
+    else
+    { cg.EmitNodes(args[0], args[1]);
+      cg.EmitCall(typeof(Ops), "Compare");
+      if(!cg.TryEmitConvertTo(etype, typeof(int)))
+      { cg.ILG.Emit(OpCodes.Box, typeof(int));
+        etype = typeof(object);
+      }
+    }
+  }
+
+  public override object Evaluate(string name, params object[] args)
+  { CheckArity(name, args);
+    return Ops.Compare(args[0], args[1]);
+  }
+
+  public override Type GetResultType() { return typeof(int); }
+}
+#endregion
+
 #region ComparisonOperator
 public abstract class ComparisonOperator : Operator
 { protected ComparisonOperator(string name) : base(name, 2, -1) { }
@@ -250,7 +274,10 @@ public sealed class EqualOperator : ComparisonOperator
 { public EqualOperator() : base("equality") { }
 
   public override void EmitOp(CodeGenerator cg, ref Type etype)
-  { if(etype==typeof(bool)) cg.EmitCall(typeof(Ops), "AreEqual");
+  { if(etype.IsValueType)
+    { cg.EmitCall(typeof(Ops), "AreEqual");
+      cg.EmitConvertTo(etype, typeof(bool));
+    }
     else
     { cg.EmitCall(typeof(Ops), "Equal");
       etype = typeof(object);
@@ -274,6 +301,11 @@ public sealed class NotEqualOperator : ComparisonOperator
     { cg.EmitCall(typeof(Ops), "AreEqual");
       etype = typeof(CodeGenerator.negbool);
     }
+    else if(etype.IsValueType)
+    { cg.EmitCall(typeof(Ops), "AreEqual");
+      cg.EmitLogicalNot();
+      cg.EmitConvertTo(etype, typeof(bool));
+    }
     else
     { cg.EmitCall(typeof(Ops), "NotEqual");
       etype = typeof(object);
@@ -294,7 +326,8 @@ public sealed class IdenticalOperator : ComparisonOperator
 
   public override void EmitOp(CodeGenerator cg, ref Type etype)
   { cg.ILG.Emit(OpCodes.Ceq);
-    if(etype!=typeof(bool))
+    if(etype.IsValueType) cg.EmitConvertTo(etype, typeof(bool));
+    else
     { cg.EmitCall(typeof(Ops), "FromBool");
       etype = typeof(object);
     }
@@ -317,8 +350,11 @@ public sealed class NotIdenticalOperator : ComparisonOperator
     if(etype==typeof(bool)) etype = typeof(CodeGenerator.negbool);
     else
     { cg.EmitLogicalNot();
-      cg.EmitCall(typeof(Ops), "FromBool");
-      etype = typeof(object);
+      if(etype.IsValueType) cg.EmitConvertTo(etype, typeof(bool));
+      else
+      { cg.EmitCall(typeof(Ops), "FromBool");
+        etype = typeof(object);
+      }
     }
   }
 
@@ -335,10 +371,11 @@ public sealed class LessOperator : ComparisonOperator
 { public LessOperator() : base("less than") { }
 
   public override void EmitOp(CodeGenerator cg, ref Type etype)
-  { if(etype==typeof(bool))
+  { if(etype.IsValueType)
     { cg.EmitCall(typeof(Ops), "Compare");
       cg.EmitInt(0);
       cg.ILG.Emit(OpCodes.Clt);
+      cg.EmitConvertTo(etype, typeof(bool));
     }
     else
     { cg.EmitCall(typeof(Ops), "Less");
@@ -359,11 +396,15 @@ public sealed class LessEqualOperator : ComparisonOperator
 { public LessEqualOperator() : base("less than or equal") { }
 
   public override void EmitOp(CodeGenerator cg, ref Type etype)
-  { if(etype==typeof(bool))
+  { if(etype.IsValueType)
     { cg.EmitCall(typeof(Ops), "Compare");
       cg.EmitInt(0);
       cg.ILG.Emit(OpCodes.Cgt);
-      etype = typeof(CodeGenerator.negbool);
+      if(etype==typeof(bool)) etype = typeof(CodeGenerator.negbool);
+      else
+      { cg.EmitLogicalNot();
+        cg.EmitConvertTo(etype, typeof(bool));
+      }
     }
     else
     { cg.EmitCall(typeof(Ops), "LessEqual");
@@ -384,10 +425,11 @@ public sealed class MoreOperator : ComparisonOperator
 { public MoreOperator() : base("more than") { }
 
   public override void EmitOp(CodeGenerator cg, ref Type etype)
-  { if(etype==typeof(bool))
+  { if(etype.IsValueType)
     { cg.EmitCall(typeof(Ops), "Compare");
       cg.EmitInt(0);
       cg.ILG.Emit(OpCodes.Cgt);
+      cg.EmitConvertTo(etype, typeof(bool));
     }
     else
     { cg.EmitCall(typeof(Ops), "More");
@@ -412,7 +454,11 @@ public sealed class MoreEqualOperator : ComparisonOperator
     { cg.EmitCall(typeof(Ops), "Compare");
       cg.EmitInt(0);
       cg.ILG.Emit(OpCodes.Clt);
-      etype = typeof(CodeGenerator.negbool);
+      if(etype==typeof(bool)) etype = typeof(CodeGenerator.negbool);
+      else
+      { cg.EmitLogicalNot();
+        cg.EmitConvertTo(etype, typeof(bool));
+      }
     }
     else
     { cg.EmitCall(typeof(Ops), "MoreEqual");
@@ -468,7 +514,7 @@ public abstract class BinaryOperator : Operator
         if(!keepAround && a!=null) cg.FreeLocalTemp(a);
         if(b!=null) cg.FreeLocalTemp(b);
       }
-      
+
       etype = typeof(object);
     }
   }

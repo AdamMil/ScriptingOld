@@ -177,6 +177,12 @@ public class CodeGenerator
     }
   }
 
+  public void EmitConvertTo(Type type, Type onStack) { EmitConvertTo(type, onStack, false); }
+  public void EmitConvertTo(Type type, Type onStack, bool checkOverflow)
+  { if(!TryEmitConvertTo(type, onStack, checkOverflow))
+      throw new ArgumentException(type+" cannot be converted to "+onStack);
+  }
+
   public void EmitDouble(double value) { ILG.Emit(OpCodes.Ldc_R8, value); }
 
   public void EmitFieldGet(Type type, string name) { EmitFieldGet(type.GetField(name, SearchAll)); }
@@ -259,7 +265,7 @@ public class CodeGenerator
     }
   }
 
-  public void EmitIsTrue() { EmitCall(typeof(Ops), "IsTrue"); }
+  public void EmitIsTrue() { Options.Current.Language.EmitIsTrue(this); }
 
   public void EmitIsTrue(Type type)
   { if(type==typeof(object)) EmitIsTrue();
@@ -540,6 +546,76 @@ public class CodeGenerator
     }
   }
 
+  public bool TryEmitConvertTo(Type type, Type onStack) { return TryEmitConvertTo(type, onStack, false); }
+  public bool TryEmitConvertTo(Type type, Type onStack, bool checkOverflow)
+  { if(type==null) throw new ArgumentNullException("type");
+    if(onStack==type || !onStack.IsValueType && !type.IsValueType && type.IsAssignableFrom(onStack)) return true;
+    if(onStack==null) return !type.IsValueType;
+
+    if(onStack.IsPrimitive && type.IsPrimitive)
+    { if(type==typeof(bool))
+      { if(onStack==typeof(double) || onStack==typeof(float) || onStack==typeof(long)) ILG.Emit(OpCodes.Conv_I4);
+        else if(onStack==typeof(ulong)) ILG.Emit(OpCodes.Conv_U4);
+      }
+      else if(type==typeof(sbyte))
+        ILG.Emit(checkOverflow ? IsSigned(onStack) ? OpCodes.Conv_Ovf_I1 : OpCodes.Conv_Ovf_I1_Un : OpCodes.Conv_I1);
+      else if(type==typeof(byte))
+        ILG.Emit(checkOverflow ? IsSigned(onStack) ? OpCodes.Conv_Ovf_U1 : OpCodes.Conv_Ovf_U1_Un : OpCodes.Conv_U1);
+      else if(type==typeof(short))
+      { if(SizeOf(onStack)>=2)
+          ILG.Emit(checkOverflow ? IsSigned(onStack) ? OpCodes.Conv_Ovf_I2 : OpCodes.Conv_Ovf_I2_Un : OpCodes.Conv_I2);
+      }
+      else if(type==typeof(ushort) || type==typeof(char))
+      { if(SizeOf(onStack)>=2)
+          ILG.Emit(checkOverflow ? IsSigned(onStack) ? OpCodes.Conv_Ovf_U2 : OpCodes.Conv_Ovf_U2_Un : OpCodes.Conv_U2);
+      }
+      else if(type==typeof(int))
+      { if(SizeOf(onStack)>=4)
+          ILG.Emit(checkOverflow ? IsSigned(onStack) ? OpCodes.Conv_Ovf_I4 : OpCodes.Conv_Ovf_I4_Un : OpCodes.Conv_I4);
+      }
+      else if(type==typeof(uint))
+      { if(SizeOf(onStack)>=4)
+          ILG.Emit(checkOverflow ? IsSigned(onStack) ? OpCodes.Conv_Ovf_U4 : OpCodes.Conv_Ovf_U4_Un : OpCodes.Conv_U4);
+      }
+      else if(type==typeof(long))
+      { if(checkOverflow)
+          ILG.Emit(onStack==typeof(ulong) ? OpCodes.Conv_Ovf_I8_Un :
+                   onStack==typeof(float) || onStack==typeof(double) ? OpCodes.Conv_Ovf_I8 : OpCodes.Conv_I8);
+        else if(onStack!=typeof(ulong)) ILG.Emit(OpCodes.Conv_I8);
+      }
+      else if(type==typeof(ulong))
+      { if(checkOverflow) ILG.Emit(IsSigned(onStack) ? OpCodes.Conv_Ovf_U8 : OpCodes.Conv_U8);
+        else if(onStack!=typeof(long)) ILG.Emit(OpCodes.Conv_U8);
+      }
+      else if(type==typeof(float)) ILG.Emit(OpCodes.Conv_R4);
+      else if(type==typeof(double)) ILG.Emit(OpCodes.Conv_R8);
+      else return false;
+
+      return true;
+    }
+
+    if(onStack.IsValueType && type==typeof(object))
+    { ILG.Emit(OpCodes.Box, onStack);
+      return true;
+    }
+
+    MethodInfo mi = type.GetMethod("op_Implicit", BindingFlags.Public|BindingFlags.Static, null,
+                                   new Type[] { onStack }, null);
+    if(mi!=null && mi.ReturnType==type)
+    { EmitCall(mi);
+      return true;
+    }
+
+    ConstructorInfo ci = type.GetConstructor(BindingFlags.Public|BindingFlags.Instance, null, new Type[] { onStack },
+                                             null);
+    if(ci!=null)
+    { EmitNew(ci);
+      return true;
+    }
+
+    return false;
+  }
+
   public Namespace Namespace;
   public bool IsInterruptible;
 
@@ -548,6 +624,19 @@ public class CodeGenerator
   public readonly ILGenerator   ILG;
 
   const BindingFlags SearchAll = BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Instance|BindingFlags.Static;
+
+  static bool IsSigned(Type type)
+  { return type==typeof(int) || type==typeof(long) || type==typeof(short) || type==typeof(sbyte) ||
+           type==typeof(float) || type==typeof(double);
+  }
+
+  static int SizeOf(Type type)
+  { if(type==typeof(int) || type==typeof(uint) || type==typeof(float)) return 4;
+    if(type==typeof(long) || type==typeof(ulong) || type==typeof(double)) return 8;
+    if(type==typeof(short) || type==typeof(ushort) || type==typeof(char)) return 2;
+    if(type==typeof(sbyte) || type==typeof(byte) || type==typeof(bool)) return 1;
+    throw new NotSupportedException(type.FullName);
+  }
 
   ArrayList localTemps;
 }
