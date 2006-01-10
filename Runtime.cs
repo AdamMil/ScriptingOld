@@ -985,6 +985,24 @@ public sealed class Ops
   public static object GetGlobal(string name) { return TopLevel.Current.Get(name); }
   public static bool GetGlobal(string name, out object value) { return TopLevel.Current.Get(name, out value); }
 
+  public static object GetIndex(object col, object index)
+  { IList list = col as IList;
+    if(list!=null) return list[ToInt(index)];
+    IDictionary dict = col as IDictionary;
+    if(dict!=null) return dict[index];
+    throw new ArgumentException("objects of type '"+TypeName(col)+"' are not indexable");
+  }
+
+  public static void SetIndex(object value, object col, object index)
+  { IList list = col as IList;
+    if(list!=null) list[ToInt(index)] = value;
+    else
+    { IDictionary dict = col as IDictionary;
+      if(dict!=null) dict[index] = value;
+      else throw new ArgumentException("objects of type '"+TypeName(col)+"' are not indexable");
+    }
+  }
+
   public static ICollection GetMemberNames(object obj) { return GetMemberNames(obj, false); }
   public static ICollection GetMemberNames(object obj, bool includeImports)
   { return MemberContainer.FromObject(obj).GetMemberNames(includeImports);

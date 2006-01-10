@@ -52,7 +52,7 @@ public sealed class Importer
     lock(LoadedModules) module = (MemberContainer)LoadedModules[name];
     if(module!=null) return module;
 
-    // TODO: optimize this so loading a dotted name from a file doesn't compile the file multiple times
+    // FIXME: optimize this so loading a dotted name from a file doesn't compile the file multiple times
     string[] bits = name.Split('.');
     top = LoadFromPath(bits[0]);
     if(top==null) top = LoadBuiltin(bits[0]);

@@ -727,6 +727,8 @@ public sealed class AST
 
       if(node is BlockNode) blocks.RemoveAt(blocks.Count-1);
       else if(node is LambdaNode) blocks = (ArrayList)funcBlocks.Pop();
+      
+      node.Postprocess();
     }
 
     #region AccessKey
@@ -758,7 +760,7 @@ public sealed class AST
 
   #region NodeDecorator
   /* This walker performs several tasks:
-    1. Marks the containing LambdaNode (InFunc) and TryNode (InTry) of each node traversed.
+    1. Marks the containing TryNode (InTry) of each node traversed, and the LambdaNode (InFunc) of each CallNode.
     2. Makes sure that interrupt nodes (nodes that exit the function and resume later (eg YieldNode)) do not occur
        within TryNodes
     3. Ensures that bare throw forms only occur within a catch block
@@ -771,13 +773,12 @@ public sealed class AST
     }
 
     public bool Walk(Node node)
-    { node.InFunc = func;
-      node.InTry  = inTry;
-
+    { node.InTry = inTry;
       if(inTry!=null && node.Interrupts)
         throw Ops.SyntaxError(node, "An interrupt node is not valid within a try block.");
 
-      if(node is LambdaNode)
+      if(node is CallNode) ((CallNode)node).InFunc = func;
+      else if(node is LambdaNode)
       { foreach(Parameter p in func.Parameters) if(p.Default!=null) p.Default.Walk(this);
 
         LambdaNode oldFunc = func;
@@ -887,8 +888,8 @@ public sealed class AST
           return false;
         }
         else if(node is VariableNode) HandleLocalReference(ref ((VariableNode)node).Name);
-        else if(node is SetNode)
-        { SetNode set = (SetNode)node;
+        else if(node is SetNodeBase)
+        { SetNodeBase set = (SetNodeBase)node;
           MutatedName[] names = set.GetMutatedNames();
           bool updated = false;
           for(int i=0; i<names.Length; i++)
@@ -900,7 +901,8 @@ public sealed class AST
     }
 
     public void PostWalk(Node node)
-    { if(top!=null) // compiled code only
+    { if(top==null) node.Postprocess(); // non-compiled code. for compiled code, this will be done by CompileDecorator
+      else
       { if(node is LocalBindNode)
         { LocalBindNode let = (LocalBindNode)node;
           int len=let.Names.Length, start=bound.Count-len;
@@ -1013,15 +1015,15 @@ public abstract class Node
   public virtual Type GetNodeType() { return typeof(object); }
   public virtual void MarkTail(bool tail) { Tail=tail; }
   public virtual void Optimize() { }
-  public virtual void Preprocess() { MarkTail(true); }
+  public void Preprocess() { MarkTail(true); }
   public virtual void SetFlags() { }
+  public virtual void Postprocess() { }
 
   public virtual void Walk(IWalker w)
   { w.Walk(this);
     w.PostWalk(this);
   }
 
-  public LambdaNode InFunc;
   public TryNode InTry;
   public Position StartPos, EndPos;
   public Flag Flags;
@@ -1682,6 +1684,7 @@ public sealed class CallNode : Node
   public readonly Node Function;
   public readonly Argument[] Args;
   public readonly int NumLists, NumDicts, NumRuns, NumNamed;
+  public LambdaNode InFunc;
 
   void AddRun(CallArg[] cargs, int ai, Node[] nodes, int start, int length, int end)
   { if(length!=1) cargs[ai] = new CallArg(MakeObjectArray(nodes, start, length), length);
@@ -2726,7 +2729,7 @@ public sealed class RestartNode : JumpNode
 #region SetNode
 public enum SetType { Alter, Bind, Set }
 
-public class SetNode : Node
+public class SetNode : SetNodeBase
 { public SetNode(string variable, Node rhs) : this(new VariableNode(variable), rhs) { }
   public SetNode(string variable, Node rhs, SetType type) : this(new VariableNode(variable), rhs, type) { }
   public SetNode(Node lhs, Node rhs) : this(new Node[] { lhs }, rhs) { }
@@ -2753,7 +2756,7 @@ public class SetNode : Node
     return value;
   }
 
-  public virtual MutatedName[] GetMutatedNames()
+  public override MutatedName[] GetMutatedNames()
   { ArrayList names = new ArrayList();
     foreach(Node n in LHS) GetMutatedNames(names, n);
     return (MutatedName[])names.ToArray(typeof(MutatedName));
@@ -2776,7 +2779,7 @@ public class SetNode : Node
     Interrupts  = RHS.Interrupts;
   }
 
-  public void UpdateNames(MutatedName[] names)
+  public override void UpdateNames(MutatedName[] names)
   { int i = 0;
     foreach(Node n in LHS) UpdateNames(names, ref i, n);
     if(i!=LHS.Length) throw new InvalidOperationException("UpdateNames: Not all names were consumed");
@@ -2843,6 +2846,13 @@ public class SetNode : Node
   protected Exception UnhandledNodeType(Node node)
   { return new NotSupportedException("Unable to assign to nodes of type "+node.GetType().FullName);
   }
+}
+#endregion
+
+#region SetNodeBase
+public abstract class SetNodeBase : Node
+{ public abstract MutatedName[] GetMutatedNames();
+  public abstract void UpdateNames(MutatedName[] names);
 }
 #endregion
 
@@ -3004,7 +3014,7 @@ public sealed class UnaryOpNode : Node
     TailReturn(cg);
   }
 
-  public override object Evaluate() { return Operator.Evaluate(Value); }
+  public override object Evaluate() { return Operator.Evaluate(Value.Evaluate()); }
   public override Type GetNodeType() { return Operator.GetResultType(); }
 
   public override void MarkTail(bool tail)
