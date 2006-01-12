@@ -536,8 +536,8 @@ public class CodeGenerator
 
   public void SetupNamespace(int maxNames) { SetupNamespace(maxNames, null); }
   public void SetupNamespace(int maxNames, Slot topSlot)
-  { Namespace = topSlot==null ? new TopLevelNamespace(this) : new TopLevelNamespace(this, topSlot);
-    if(maxNames!=0)
+  { Namespace = new TopLevelNamespace(this, topSlot);
+    if(maxNames!=0) // we have a top level closure
     { Namespace = new LocalNamespace(Namespace, this);
       EmitArgGet(0);
       EmitInt(maxNames);
@@ -617,6 +617,7 @@ public class CodeGenerator
   }
 
   public Namespace Namespace;
+  public LambdaNode Function;
   public bool IsInterruptible;
 
   public readonly TypeGenerator TypeGenerator;

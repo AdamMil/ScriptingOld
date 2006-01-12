@@ -71,9 +71,7 @@ public sealed class EnvironmentSlot : Slot
   public override Type Type { get { return SlotType; } }
 
   public override void EmitGet(CodeGenerator cg)
-  { cg.EmitArgGet(0);
-    for(int i=0; i<Depth; i++) cg.EmitFieldGet(typeof(LocalEnvironment), "Parent");
-    cg.EmitFieldGet(typeof(LocalEnvironment), "Values");
+  { GetArray(cg);
     cg.EmitInt(Index);
     cg.ILG.Emit(OpCodes.Ldelem_Ref);
     if(SlotType.IsValueType)
@@ -86,9 +84,6 @@ public sealed class EnvironmentSlot : Slot
   public override void EmitGetAddr(CodeGenerator cg)
   { if(SlotType!=typeof(object))
       throw new NotImplementedException("Getting the address of a non-Object variable is not supported");
-    cg.EmitArgGet(0);
-    for(int i=0; i<Depth; i++) cg.EmitFieldGet(typeof(LocalEnvironment), "Parent");
-    cg.EmitFieldGet(typeof(LocalEnvironment), "Values");
     cg.EmitInt(Index);
     cg.ILG.Emit(OpCodes.Ldelema);
   }
@@ -101,14 +96,26 @@ public sealed class EnvironmentSlot : Slot
   }
 
   public override void EmitSet(CodeGenerator cg, Slot val)
-  { cg.EmitArgGet(0);
-    for(int i=0; i<Depth; i++) cg.EmitFieldGet(typeof(LocalEnvironment), "Parent");
-    cg.EmitFieldGet(typeof(LocalEnvironment), "Values");
-    cg.EmitInt(Index);
+  { cg.EmitInt(Index);
     val.EmitGet(cg);
     // TODO: check for compatibility between types
     if(val.Type.IsValueType) cg.ILG.Emit(OpCodes.Box, val.Type);
     cg.ILG.Emit(OpCodes.Stelem_Ref);
+  }
+
+  void GetArray(CodeGenerator cg)
+  { int depth = Depth;
+    if(cg.Function!=null)
+    { if(!cg.Function.CreatesLocalEnvironment) depth--;
+      if(depth<=0 && Index<=cg.Function.Parameters.Length && cg.Function.MaxNames==cg.Function.Parameters.Length)
+      { cg.EmitArgGet(1);
+        return;
+      }
+    }
+
+    cg.EmitArgGet(0);
+    for(int i=0; i<Depth; i++) cg.EmitFieldGet(typeof(LocalEnvironment), "Parent");
+    cg.EmitFieldGet(typeof(LocalEnvironment), "Values");
   }
 
   Type SlotType;

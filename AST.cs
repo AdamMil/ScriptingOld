@@ -366,7 +366,7 @@ public abstract class Language
           if(type!=typeof(int)) cg.EmitCall(typeof(Ops), "ToInt");
         }
         cg.EmitPropGet(typeof(string), "Chars");
-        if(etype!=typeof(char))
+        if(!etype.IsValueType || !cg.TryEmitConvertTo(etype, typeof(char)))
         { cg.ILG.Emit(OpCodes.Box, typeof(char));
           goto objret;
         }
@@ -638,74 +638,233 @@ public sealed class AST
 
   public static LambdaNode CreateCompiled(Node body)
   { // wrapping it in a lambda node is done so we can keep the preprocessing code simple, and so that we can support
-    // top-level closures. it's unwrapped later on by SnippetMaker.Generate()
+    // top-level closures. it's unwrapped later on by SnippetMaker.Generate() et al
     LambdaNode ret = new LambdaNode(body);
     ret.Preprocess();
     ret.Walk(new NodeDecorator(ret));
-    ret.Walk(new CompileDecorator());
     return ret;
   }
 
-  #region CompileDecorator
-  /* This walker perfoms the following tasks:
-    1. Sets node flags by calling node.SetFlags() [from the leaves to the root]
-    2. Calls node.Optimize() if optimization is enabled [from the leaves to the root]
-    3. Creates shared CachePromise objects for equivalent MemberNodes
-    4. Sets the Parent fields of BlockNodes
-    5. Finds all jump nodes (BreakNode and RestartNode) within blocks and updates them with information about whether
+  #region NodeDecorator
+  /* This walker performs several tasks:
+    1. Marks the containing ExceptionNode (InTry) of each node traversed, and the LambdaNode (InFunc) of each CallNode.
+    2. Makes sure that interrupt nodes (nodes that exit the function and resume later (eg YieldNode)) do not occur
+       within TryNodes
+    3. Ensures that bare throw forms only occur within a catch block
+    4. Resolves references to all names used within the function
+    5. Sets node flags by calling node.SetFlags() [from the leaves to the root]
+    6. Calls node.Optimize() if optimization is enabled [from the leaves to the root]
+    7. Creates shared CachePromise objects for equivalent MemberNodes
+    8. Sets the Parent fields of BlockNodes
+    9. Finds all jump nodes (BreakNode and RestartNode) within blocks and updates them with information about whether
        they need to use the Leave opcode, etc.
-    6. Determines whether blocks have early exits (an exit that comes before the block's tail) or restarts.
+    10. Determines whether blocks have early exits (an exit that comes before the block's tail) or restarts.
+    11. Calls node.Postprocess()
   */
-  sealed class CompileDecorator : IWalker
-  { public CompileDecorator() { optimize = Options.Current.Optimize; }
+  sealed class NodeDecorator : IWalker
+  { public NodeDecorator(LambdaNode top)
+    { func = this.top = top;
+      if(top!=null) { bound=new ArrayList(); free=new ArrayList(); values=new ArrayList(); }
+      optimize = Options.Current.Optimize;
+    }
 
     public bool Walk(Node node)
-    { if(node is JumpNode)
-      { JumpNode jn = (JumpNode)node;
-        if(blocks==null || blocks.Count==0) throw Ops.SyntaxError(jn, "break/continue found outside block");
-        int i;
-        for(i=blocks.Count-1; i>=0; i--)
-        { BlockNode block = (BlockNode)blocks[i];
-          if(block.Name==jn.Name)
-          { if(jn is RestartNode)
-            { RestartNode rn = (RestartNode)jn;
-              rn.NeedsLeave = rn.InTry!=block.InTry;
-              block.HasRestart = true;
-            }
-            else
-            { BreakNode bn = (BreakNode)jn;
-              bn.Block = block;
+    { node.InTry = inTry;
+      if(inTry!=null && node.Interrupts)
+        throw Ops.SyntaxError(node, "An interrupt node is not valid within a try block.");
 
-              if(!bn.Tail)
-                while(true)
-                { block.HasEarlyExit = true;
-                  if(!block.Tail || block.Parent==null) break;
-                  block = block.Parent;
-                }
-
-              bn.NeedsLeave = bn.InTry!=block.InTry;
-            }
-            break;
-          }
-        }
-        if(i==-1) throw Ops.SyntaxError(jn, "undefined block: "+jn.Name);
-      }
-      else if(node is BlockNode)
-      { BlockNode bn = (BlockNode)node;
-        if(blocks==null) blocks = new ArrayList();
-        bn.Parent = blocks.Count==0 ? null : (BlockNode)blocks[blocks.Count-1];
-        blocks.Add(bn);
-      }
+      if(node is CallNode) ((CallNode)node).InFunc = func;
       else if(node is LambdaNode)
-      { if(funcBlocks==null) funcBlocks = new Stack();
-        funcBlocks.Push(blocks);
-        blocks = null;
+      { foreach(Parameter p in func.Parameters) if(p.Default!=null) p.Default.Walk(this);
+
+        LambdaNode oldFunc = func;
+        ExceptionNode oldTry = inTry;
+        bool oldCatch  = inCatch;
+        func    = (LambdaNode)node;
+        inTry   = null;
+        inCatch = false;
+
+        if(top==null) func.Body.Walk(this); // we don't need to resolve names in evaluated code
+        else
+        { int oldFree=freeStart, oldBound=boundStart, oldBlock=blockStart;
+
+          freeStart  = free.Count;
+          boundStart = bound.Count;
+          blockStart = blocks==null ? 0 : blocks.Count;
+
+          foreach(Parameter parm in func.Parameters)
+          { bound.Add(parm.Name);
+            values.Add(null);
+          }
+
+          func.Body.Walk(this);
+
+          // if there are free variables in this function, try to resolve them
+          for(int i=freeStart; i<free.Count; i++)
+          { Name name = (Name)free[i];
+            int index = IndexOf(name.String, bound, oldBound, boundStart);
+            if(index==-1) // if it's not bound to any local variables of the previous function in the function stack...
+            { if(oldFunc==top) name.Depth = Scripting.Name.Global; // it's global if oldFunc==top
+              else // otherwise mark it for evaluation in the next frame up the stack
+              { if(func.MaxNames!=0) name.Depth++; // if this function adds a local environment, increase the depth
+                free[freeStart++] = name;
+              }
+            }
+            else // it's bound to a local variable in the previous function in the stack
+            { Name bname = (Name)bound[index];
+              int argPos = IndexOf(name.String, oldFunc.Parameters);
+              if(bname.Depth==Scripting.Name.Local && argPos==-1) // if it's not a parameter
+              { bname.Depth = 0; // set its depth to zero to indicate that it's coming from the LocalEnvironment
+                bname.Index = name.Index = oldFunc.MaxNames++; // and set the proper index, making sure to update
+                bname.Type  = name.Type;                       // both instances of the name
+              }
+              else // it's a parameter
+              { if(argPos!=-1) oldFunc.ArgsClosed = true; // mark the fact that the function's arguments are used in a closure
+                name.Index = bname.Index; // and set the correct index
+              }
+              if(func.MaxNames!=0) name.Depth++; // if this function adds a local environment, increase the depth
+
+              LambdaNode lambda = values[index] as LambdaNode; // if the function is bound to a lambda throughout its
+              if(lambda!=null) lambda.Binding = name;          // scope, we can use that info to optimize tail calls
+            }
+          }
+
+          values.RemoveRange(boundStart, bound.Count-boundStart);
+          bound.RemoveRange(boundStart, bound.Count-boundStart);
+          free.RemoveRange(freeStart, free.Count-freeStart);
+          if(blocks!=null) blocks.RemoveRange(blockStart, blocks.Count-blockStart);
+          boundStart=oldBound; freeStart=oldFree; blockStart=oldBlock;
+        }
+        func=oldFunc; inTry=oldTry; inCatch=oldCatch;
+        return false;
+      }
+      else if(!inCatch && node is ThrowNode && ((ThrowNode)node).Exception==null)
+        throw Ops.SyntaxError(node, "bare throw form is only allowed within a catch statement");
+      else if(node is ExceptionNode)
+      { if(tryBlocks==null) tryBlocks = new Stack();
+        tryBlocks.Push(inTry);
+        inTry = (ExceptionNode)node;
+
+        if(node is TryNode)
+        { TryNode tn=(TryNode)node;
+          tn.Body.Walk(this);
+
+          if(tn.Excepts!=null)
+            foreach(Except ex in tn.Excepts)
+            { if(ex.Types!=null) foreach(Node n in ex.Types) n.Walk(this);
+              if(ex.Var!=null)
+              { bound.Add(ex.Var);
+                values.Add(null);
+              }
+              inCatch = true;
+              ex.Body.Walk(this);
+              inCatch = false;
+              if(ex.Var!=null)
+              { bound.RemoveAt(bound.Count-1);
+                values.RemoveAt(values.Count-1);
+              }
+            }
+
+          if(tn.Finally!=null) tn.Finally.Walk(this);
+          return false;
+        }
+      }
+      else if(top!=null) // compiled code only
+      { if(node is VariableNode) HandleLocalReference(ref ((VariableNode)node).Name);
+        else if(node is SetNodeBase)
+        { SetNodeBase set = (SetNodeBase)node;
+          MutatedName[] names = set.GetMutatedNames();
+          bool updated = false;
+          for(int i=0; i<names.Length; i++)
+            if(HandleLocalReference(ref names[i].Name, names[i].Value, true)) updated = true;
+          if(updated) set.UpdateNames(names);
+        }
+        else if(node is LocalBindNode)
+        { LocalBindNode let = (LocalBindNode)node;
+          foreach(Node n in let.Inits) if(n!=null) n.Walk(this);
+          for(int i=0; i<let.Names.Length; i++)
+          { bound.Add(let.Names[i]);
+            values.Add(let.Inits[i]==null ? Scripting.Binding.Unbound : let.Inits[i]);
+          }
+          let.Body.Walk(this);
+          return false;
+        }
+        else if(node is ValueBindNode)
+        { ValueBindNode let = (ValueBindNode)node;
+          foreach(Node n in let.Inits) n.Walk(this);
+          foreach(Name[] names in let.Names)
+            foreach(Name name in names) { bound.Add(name); values.Add(null); }
+          let.Body.Walk(this);
+          return false;
+        }
+        else if(node is JumpNode)
+        { JumpNode jn = (JumpNode)node;
+          if(blocks==null || blocks.Count==blockStart) throw Ops.SyntaxError(jn, "break/continue found outside block");
+          int i;
+          for(i=blocks.Count-1; i>=blockStart; i--)
+          { BlockNode block = (BlockNode)blocks[i];
+            if(block.Name==jn.Name)
+            { if(jn is RestartNode)
+              { RestartNode rn = (RestartNode)jn;
+                rn.NeedsLeave = rn.InTry!=block.InTry;
+                block.HasRestart = true;
+              }
+              else
+              { BreakNode bn = (BreakNode)jn;
+                bn.Block = block;
+
+                if(!bn.Tail)
+                  while(true)
+                  { block.HasEarlyExit = true;
+                    if(!block.Tail || block.Parent==null) break;
+                    block = block.Parent;
+                  }
+
+                bn.NeedsLeave = bn.InTry!=block.InTry;
+              }
+              break;
+            }
+          }
+          if(i==-1) throw Ops.SyntaxError(jn, "undefined block: "+jn.Name);
+        }
+        else if(node is BlockNode)
+        { BlockNode bn = (BlockNode)node;
+          if(blocks==null) blocks = new ArrayList();
+          bn.Parent = blocks.Count==blockStart ? null : (BlockNode)blocks[blocks.Count-1];
+          blocks.Add(bn);
+        }
       }
       return true;
     }
 
     public void PostWalk(Node node)
-    { node.SetFlags();
+    { if(node is ExceptionNode) inTry = (ExceptionNode)tryBlocks.Pop();
+      if(top==null) return;
+
+      if(node is LocalBindNode)
+      { LocalBindNode let = (LocalBindNode)node;
+        int len=let.Names.Length, start=bound.Count-len;
+
+        for(int i=start; i<values.Count; i++)
+        { LambdaNode lambda = values[i] as LambdaNode;
+          if(lambda!=null) lambda.Binding = (Name)bound[i];
+        }
+
+        bound.RemoveRange(start, len);
+        values.RemoveRange(start, len);
+      }
+      else if(node is ValueBindNode)
+      { ValueBindNode let = (ValueBindNode)node;
+        int len=0, start;
+        foreach(Name[] names in let.Names) len += names.Length;
+        start = bound.Count-len;
+        bound.RemoveRange(start, len);
+        values.RemoveRange(start, len);
+      }
+      else if(node is BlockNode) blocks.RemoveAt(blocks.Count-1);
+
+      node.SetFlags();
+
       if(optimize!=OptimizeType.None)
       { node.Optimize();
 
@@ -725,205 +884,7 @@ public sealed class AST
         }
       }
 
-      if(node is BlockNode) blocks.RemoveAt(blocks.Count-1);
-      else if(node is LambdaNode) blocks = (ArrayList)funcBlocks.Pop();
-      
       node.Postprocess();
-    }
-
-    #region AccessKey
-    struct AccessKey
-    { public AccessKey(Name name, string members) { Name=name; Members=members; }
-
-      public override bool Equals(object obj)
-      { AccessKey other = (AccessKey)obj;
-        return (Name==other.Name ||
-                Name.Depth==Name.Global && other.Name.Depth==Name.Global && Name.String==other.Name.String) &&
-               Members==other.Members;
-      }
-
-      public override int GetHashCode()
-      { return Name.Depth ^ Name.Index ^ Name.String.GetHashCode() ^ Members.GetHashCode();
-      }
-
-      public Name Name;
-      public string Members;
-    }
-    #endregion
-
-    Hashtable memberNodes;
-    OptimizeType optimize;
-    ArrayList blocks;
-    Stack funcBlocks;
-  }
-  #endregion
-
-  #region NodeDecorator
-  /* This walker performs several tasks:
-    1. Marks the containing TryNode (InTry) of each node traversed, and the LambdaNode (InFunc) of each CallNode.
-    2. Makes sure that interrupt nodes (nodes that exit the function and resume later (eg YieldNode)) do not occur
-       within TryNodes
-    3. Ensures that bare throw forms only occur within a catch block
-    4. Resolves references to all names used within the function
-  */
-  sealed class NodeDecorator : IWalker
-  { public NodeDecorator(LambdaNode top)
-    { func = this.top = top;
-      if(top!=null) { bound=new ArrayList(); free=new ArrayList(); values=new ArrayList(); }
-    }
-
-    public bool Walk(Node node)
-    { node.InTry = inTry;
-      if(inTry!=null && node.Interrupts)
-        throw Ops.SyntaxError(node, "An interrupt node is not valid within a try block.");
-
-      if(node is CallNode) ((CallNode)node).InFunc = func;
-      else if(node is LambdaNode)
-      { foreach(Parameter p in func.Parameters) if(p.Default!=null) p.Default.Walk(this);
-
-        LambdaNode oldFunc = func;
-        TryNode oldTry = inTry;
-        bool oldCatch  = inCatch;
-        func    = (LambdaNode)node;
-        inTry   = null;
-        inCatch = false;
-
-        if(top==null) func.Body.Walk(this); // we don't need to resolve names in evaluated code
-        else
-        { int oldFree=freeStart, oldBound=boundStart;
-
-          freeStart = free.Count;
-          boundStart = bound.Count;
-
-          foreach(Parameter parm in func.Parameters)
-          { bound.Add(parm.Name);
-            values.Add(null);
-          }
-
-          func.Body.Walk(this);
-
-          for(int i=freeStart; i<free.Count; i++)
-          { Name name = (Name)free[i];
-            int index = IndexOf(name.String, bound, oldBound, boundStart);
-            if(index==-1)
-            { if(oldFunc==top/* || oldFunc is ModuleNode*/) name.Depth = Scripting.Name.Global; // TODO: uncomment later?
-              else
-              { if(func.MaxNames!=0) name.Depth++;
-                free[freeStart++] = name;
-              }
-            }
-            else
-            { Name bname = (Name)bound[index];
-              int argPos = IndexOf(name.String, oldFunc.Parameters);
-              if(bname.Depth==Scripting.Name.Local && argPos==-1)
-              { bname.Depth = 0;
-                bname.Index = name.Index = oldFunc.MaxNames++;
-                bname.Type  = name.Type;
-              }
-              else
-              { if(argPos!=-1) oldFunc.ArgsClosed = true;
-                name.Index = bname.Index;
-              }
-              if(func.MaxNames!=0) name.Depth++;
-
-              LambdaNode lambda = values[index] as LambdaNode;
-              if(lambda!=null) lambda.Binding = name;
-            }
-          }
-
-          values.RemoveRange(boundStart, bound.Count-boundStart);
-          bound.RemoveRange(boundStart, bound.Count-boundStart);
-          free.RemoveRange(freeStart, free.Count-freeStart);
-          boundStart=oldBound; freeStart=oldFree;
-        }
-        func=oldFunc; inTry=oldTry; inCatch=oldCatch;
-        return false;
-      }
-      else if(!inCatch && node is ThrowNode && ((ThrowNode)node).Exception==null)
-        throw Ops.SyntaxError(node, "bare throw form is only allowed within a catch statement");
-      else if(node is TryNode)
-      { TryNode oldTry=inTry, tn=(TryNode)node;
-        inTry = tn;
-
-        tn.Body.Walk(this);
-
-        if(tn.Excepts!=null)
-          foreach(Except ex in tn.Excepts)
-          { if(ex.Types!=null) foreach(Node n in ex.Types) n.Walk(this);
-            if(ex.Var!=null)
-            { bound.Add(ex.Var);
-              values.Add(null);
-            }
-            inCatch = true;
-            ex.Body.Walk(this);
-            inCatch = false;
-            if(ex.Var!=null)
-            { bound.RemoveAt(bound.Count-1);
-              values.RemoveAt(values.Count-1);
-            }
-          }
-
-        if(tn.Finally!=null) tn.Finally.Walk(this);
-
-        inTry = oldTry;
-        return false;
-      }
-      else if(top!=null) // compiled code only
-      { if(node is LocalBindNode)
-        { LocalBindNode let = (LocalBindNode)node;
-          foreach(Node n in let.Inits) if(n!=null) n.Walk(this);
-          for(int i=0; i<let.Names.Length; i++)
-          { bound.Add(let.Names[i]);
-            values.Add(let.Inits[i]==null ? Scripting.Binding.Unbound : let.Inits[i]);
-          }
-          let.Body.Walk(this);
-          return false;
-        }
-        else if(node is ValueBindNode)
-        { ValueBindNode let = (ValueBindNode)node;
-          foreach(Node n in let.Inits) n.Walk(this);
-          foreach(Name[] names in let.Names)
-            foreach(Name name in names) { bound.Add(name); values.Add(null); }
-          let.Body.Walk(this);
-          return false;
-        }
-        else if(node is VariableNode) HandleLocalReference(ref ((VariableNode)node).Name);
-        else if(node is SetNodeBase)
-        { SetNodeBase set = (SetNodeBase)node;
-          MutatedName[] names = set.GetMutatedNames();
-          bool updated = false;
-          for(int i=0; i<names.Length; i++)
-            if(HandleLocalReference(ref names[i].Name, names[i].Value, true)) updated = true;
-          if(updated) set.UpdateNames(names);
-        }
-      }
-      return true;
-    }
-
-    public void PostWalk(Node node)
-    { if(top==null) node.Postprocess(); // non-compiled code. for compiled code, this will be done by CompileDecorator
-      else
-      { if(node is LocalBindNode)
-        { LocalBindNode let = (LocalBindNode)node;
-          int len=let.Names.Length, start=bound.Count-len;
-
-          for(int i=start; i<values.Count; i++)
-          { LambdaNode lambda = values[i] as LambdaNode;
-            if(lambda!=null) lambda.Binding = (Name)bound[i];
-          }
-
-          bound.RemoveRange(start, len);
-          values.RemoveRange(start, len);
-        }
-        else if(node is ValueBindNode)
-        { ValueBindNode let = (ValueBindNode)node;
-          int len=0, start;
-          foreach(Name[] names in let.Names) len += names.Length;
-          start = bound.Count-len;
-          bound.RemoveRange(start, len);
-          values.RemoveRange(start, len);
-        }
-      }
     }
 
     int IndexOf(string name, IList list) // these are kind of DWIMish
@@ -956,10 +917,33 @@ public sealed class AST
       return false;
     }
 
+    #region AccessKey
+    struct AccessKey
+    { public AccessKey(Name name, string members) { Name=name; Members=members; }
+
+      public override bool Equals(object obj)
+      { AccessKey other = (AccessKey)obj;
+        return (Name==other.Name ||
+                Name.Depth==Name.Global && other.Name.Depth==Name.Global && Name.String==other.Name.String) &&
+               Members==other.Members;
+      }
+
+      public override int GetHashCode()
+      { return Name.Depth ^ Name.Index ^ Name.String.GetHashCode() ^ Members.GetHashCode();
+      }
+
+      public Name Name;
+      public string Members;
+    }
+    #endregion
+
     LambdaNode func, top;
-    TryNode inTry;
-    ArrayList bound, free, values;
-    int boundStart, freeStart;
+    ExceptionNode inTry;
+    Hashtable memberNodes;
+    ArrayList blocks, bound, free, values;
+    Stack tryBlocks;
+    int boundStart, freeStart, blockStart;
+    OptimizeType optimize;
     bool inCatch;
 
     static int IndexOf(string name, IList list, int start, int end)
@@ -1024,7 +1008,7 @@ public abstract class Node
     w.PostWalk(this);
   }
 
-  public TryNode InTry;
+  public ExceptionNode InTry;
   public Position StartPos, EndPos;
   public Flag Flags;
 
@@ -1390,7 +1374,7 @@ public sealed class CallNode : Node
     cg.MarkPosition(this);
 
     bool hasTryArg = HasTryArg();
-    if(hasTryArg || NumRuns>1) goto normal;
+    if(hasTryArg || NumNamed!=0 || NumLists!=0 || NumDicts!=0) goto normal;
 
     if(Options.Current.OptimizeAny && Function is VariableNode)
     { VariableNode vn = (VariableNode)Function;
@@ -1641,7 +1625,8 @@ public sealed class CallNode : Node
 
   #region GetNodeType
   public override Type GetNodeType()
-  { if(Options.Current.OptimizeSpeed && Function is VariableNode)
+  { if(Options.Current.OptimizeSpeed && !HasTryArg() && NumNamed==0 && NumLists==0 && NumDicts==0 &&
+       Function is VariableNode)
     { string name = ((VariableNode)Function).Name.String;
       Language lang = Options.Current.Language;
       if(lang.IsConstantFunction(name)) return lang.GetInlinedResultType(name);
@@ -1700,7 +1685,7 @@ public sealed class CallNode : Node
     if(length==1) for(; start<end; start++) if(Args[start].Name==null) break;
 
     bool keepAround = false;
-    if(!hasTryArg) value=null;
+    if(!hasTryArg) value = null;
     else
     { if(length==1) Args[start].Expression.Emit(cg);
       else cg.EmitObjectArray(nodes, start, length);
@@ -1791,68 +1776,78 @@ public abstract class DebugNode : Node
 #endregion
 
 #region DeleteNode
-public class DeleteNode : Node
-{ public DeleteNode(Node node) { Node=node; }
-  
+public class DeleteNode : SetNodeBase
+{ public DeleteNode(Node[] nodes) { Nodes = nodes; }
+
   public override void Emit(CodeGenerator cg, ref Type etype)
   { cg.MarkPosition(this);
-    EmitDelete(cg);
-    if(Tail) cg.ILG.Emit(OpCodes.Ldnull);
+    foreach(Node n in Nodes) EmitDelete(cg, n);
+    if(etype!=typeof(void))
+    { cg.ILG.Emit(OpCodes.Ldnull);
+      etype = typeof(object);
+    }
     TailReturn(cg);
   }
 
   public override object Evaluate()
-  { Delete();
+  { foreach(Node n in Nodes) Delete(n);
     return null;
   }
 
-  public MutatedName[] GetMutatedNames()
+  public override MutatedName[] GetMutatedNames()
   { ArrayList names = new ArrayList();
-    GetMutatedNames(names);
+    foreach(Node n in Nodes) GetMutatedNames(names, n);
     return (MutatedName[])names.ToArray(typeof(MutatedName));
   }
 
-  public override Type GetNodeType() { return null; }
+  public override Type GetNodeType() { return typeof(void); }
 
   public override void MarkTail(bool tail)
-  { Node.MarkTail(false);
+  { foreach(Node n in Nodes) n.MarkTail(false);
     Tail = tail;
   }
 
-  public virtual void UpdateNames(MutatedName[] names)
-  { if(Node is VariableNode) ((VariableNode)Node).Name = names[0].Name;
-    else throw UnhandledNodeType();
+  public override void UpdateNames(MutatedName[] names)
+  { int i = 0;
+    foreach(Node n in Nodes) UpdateNames(names, ref i, n);
+    if(i!=names.Length) throw new InvalidOperationException("UpdateNames: Not all names were consumed");
   }
 
   public override void Walk(IWalker w)
-  { if(w.Walk(this)) Node.Walk(w);
+  { if(w.Walk(this)) foreach(Node n in Nodes) n.Walk(w);
     w.PostWalk(this);
   }
 
-  public readonly Node Node;
+  public readonly Node[] Nodes;
 
-  protected virtual void Delete()
-  { if(Node is VariableNode)
-    { VariableNode vn = (VariableNode)Node;
+  protected virtual void Delete(Node node)
+  { if(node is VariableNode)
+    { VariableNode vn = (VariableNode)node;
       InterpreterEnvironment cur = InterpreterEnvironment.Current;
       if(vn.Name.Depth==Name.Global || cur==null) TopLevel.Current.Unbind(vn.Name.String);
       else cur.Set(vn.Name.String, Binding.Unbound);
     }
-    else throw UnhandledNodeType();
+    else throw UnhandledNodeType(node);
   }
 
-  protected virtual void EmitDelete(CodeGenerator cg)
-  { if(Node is VariableNode) cg.EmitDelete(((VariableNode)Node).Name);
-    else throw UnhandledNodeType();
+  protected virtual void EmitDelete(CodeGenerator cg, Node node)
+  { if(node is VariableNode) cg.EmitDelete(((VariableNode)node).Name);
+    else throw UnhandledNodeType(node);
   }
 
-  protected virtual void GetMutatedNames(IList names)
-  { if(Node is VariableNode) names.Add(new MutatedName(((VariableNode)Node).Name));
-    else throw UnhandledNodeType();
+  // TODO: currently, this has to be kept in sync with SetNodeBase.GetMutatedNames(), and the same for UpdateNames(). fix that.
+  protected virtual void GetMutatedNames(IList names, Node lhs)
+  { if(lhs is VariableNode) names.Add(new MutatedName(((VariableNode)lhs).Name));
+    else throw UnhandledNodeType(lhs);
   }
 
-  protected Exception UnhandledNodeType()
-  { return new NotSupportedException("Unable to delete nodes of type "+Node.GetType().FullName);
+  protected virtual void UpdateNames(MutatedName[] names, ref int i, Node lhs)
+  { if(lhs is VariableNode) ((VariableNode)lhs).Name = names[i++].Name;
+    else throw UnhandledNodeType(lhs);
+  }
+
+  protected static Exception UnhandledNodeType(Node node)
+  { return new NotSupportedException("Unable to delete nodes of type "+node.GetType().FullName);
   }
 }
 #endregion
@@ -2288,6 +2283,8 @@ public sealed class LambdaNode : Node
     }
   }
 
+  public bool CreatesLocalEnvironment { get { return MaxNames!=Parameters.Length || ArgsClosed; } }
+
   public override void Emit(CodeGenerator cg, ref Type etype)
   { cg.MarkPosition(this);
     if(etype!=typeof(void))
@@ -2344,7 +2341,7 @@ public sealed class LambdaNode : Node
     Interrupts  = interrupts;
   }
 
-  public override void Walk(IWalker w)
+  public override void Walk(IWalker w) // this has to be kept in sync with NodeDecorator.Walk(), unfortunately
   { if(w.Walk(this)) Body.Walk(w);
     w.PostWalk(this);
   }
@@ -2383,8 +2380,9 @@ public sealed class LambdaNode : Node
     if(Name!=null) name += "_"+Name;
     icg = cg.TypeGenerator.DefineStaticMethod(name, typeof(object), typeof(LocalEnvironment), typeof(object[]));
 
+    icg.Function  = this;
     icg.Namespace = new LocalNamespace(cg.Namespace, icg);
-    if(MaxNames!=0)
+    if(CreatesLocalEnvironment)
     { icg.EmitArgGet(0);
       if(Parameters.Length!=0) icg.EmitArgGet(1);
       if(MaxNames==Parameters.Length)
@@ -2782,7 +2780,7 @@ public class SetNode : SetNodeBase
   public override void UpdateNames(MutatedName[] names)
   { int i = 0;
     foreach(Node n in LHS) UpdateNames(names, ref i, n);
-    if(i!=LHS.Length) throw new InvalidOperationException("UpdateNames: Not all names were consumed");
+    if(i!=names.Length) throw new InvalidOperationException("UpdateNames: Not all names were consumed");
   }
 
   public override void Walk(IWalker w)
@@ -2985,7 +2983,7 @@ public sealed class TryNode : ExceptionNode
 
   public override void Optimize() { IsConstant = AreConstant(Body, Else, Finally); }
 
-  public override void Walk(IWalker w)
+  public override void Walk(IWalker w) // this has to be kept in sync with NodeDecorator.Walk(), unfortunately
   { if(w.Walk(this))
     { BaseWalk(w);
       if(Finally!=null) Finally.Walk(w);

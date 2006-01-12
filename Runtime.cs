@@ -655,7 +655,7 @@ public sealed class Ops
 
   public static object Call(object func, CallArg[] args)
   { int ai=0, pi=0, num=0;
-    bool hasdict=false;
+    bool hasdict = false;
 
     for(; ai<args.Length; ai++)
       if(args[ai].Type==null) num++;
@@ -1640,20 +1640,20 @@ public sealed class Template
     if(!HasList)
     { if(nargs==NumParams) return args;
       else if(nargs>NumParams) throw new TargetParameterCountException(Name+": expected at most "+NumParams+
-                                                                       " arguments, but received "+nargs);
+                                                                       " positional arguments, but received "+nargs);
     }
     if(nargs<NumRequired) throw new TargetParameterCountException(Name+": expected at least "+NumRequired+
-                                                                  " arguments, but received "+nargs);
+                                                                  " positional arguments, but received "+nargs);
 
     object[] newargs = nargs==NumParams ? args : new object[NumParams];
 
     int plen=NumParams, pos=plen-(HasList ? 1 : 0)-(HasDict ? 1 : 0), ai=Math.Min(pos, nargs);
 
-    if(HasList) newargs[pos] = Language.PackArguments(args, pos, plen-pos);
-    if(HasDict) newargs[pos+1] = Language.MakeKeywordDict();
+    if(HasList) newargs[pos] = Language.PackArguments(args, ai, nargs-ai);
+    if(HasDict) newargs[pos+(HasList ? 1 : 0)] = Language.MakeKeywordDict();
     if(args!=newargs) Array.Copy(args, newargs, ai);
     plen = pos-ai;
-    if(plen!=0) Array.Copy(defaults, defaults.Length-plen-1, newargs, ai, plen);
+    if(plen!=0) Array.Copy(defaults, defaults.Length-plen, newargs, ai, plen);
     return newargs;
   }
 
