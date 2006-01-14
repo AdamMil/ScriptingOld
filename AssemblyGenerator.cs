@@ -64,7 +64,7 @@ public sealed class AssemblyGenerator
   { TypeGenerator tg = DefineType(TypeAttributes.Public|TypeAttributes.Sealed, typeName, typeof(Snippet));
 
     CodeGenerator cg = tg.DefineMethodOverride("Run", true);
-    cg.SetupNamespace(body.MaxNames);
+    cg.SetupNamespace(body.ClosedVars);
     body.Body.Emit(cg);
     cg.Finish();
     return (Snippet)tg.FinishType().GetConstructor(Type.EmptyTypes).Invoke(null);

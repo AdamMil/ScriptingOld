@@ -35,7 +35,14 @@ public abstract class Slot
   public abstract void EmitGetAddr(CodeGenerator cg);
 
   public abstract void EmitSet(CodeGenerator cg);
-  public virtual void EmitSet(CodeGenerator cg, Slot val) { val.EmitGet(cg); EmitSet(cg); }
+  public virtual void EmitSet(CodeGenerator cg, Slot value) { value.EmitGet(cg); EmitSet(cg); }
+  public virtual void EmitSet(CodeGenerator cg, Node value) { EmitTypedNode(cg, value); EmitSet(cg); }
+
+  protected void EmitTypedNode(CodeGenerator cg, Node node)
+  { Type onStack = Type;
+    node.Emit(cg, ref onStack);
+    cg.EmitConvertTo(Type, onStack);
+  }
 }
 #endregion
 
@@ -62,7 +69,7 @@ public sealed class ArgSlot : Slot
 }
 #endregion
 
-// FIXME: eliminate the requirement to cast typed names on every retrieval
+// TODO: eliminate the requirement to cast typed names on every retrieval
 #region EnvironmentSlot
 public sealed class EnvironmentSlot : Slot
 { public EnvironmentSlot(Name name) : this(name.Depth, name.Index, name.Type) { }
@@ -84,6 +91,7 @@ public sealed class EnvironmentSlot : Slot
   public override void EmitGetAddr(CodeGenerator cg)
   { if(SlotType!=typeof(object))
       throw new NotImplementedException("Getting the address of a non-Object variable is not supported");
+    GetArray(cg);
     cg.EmitInt(Index);
     cg.ILG.Emit(OpCodes.Ldelema);
   }
@@ -95,27 +103,32 @@ public sealed class EnvironmentSlot : Slot
     cg.FreeLocalTemp(temp);
   }
 
-  public override void EmitSet(CodeGenerator cg, Slot val)
-  { cg.EmitInt(Index);
-    val.EmitGet(cg);
+  public override void EmitSet(CodeGenerator cg, Slot value)
+  { GetArray(cg);
+    cg.EmitInt(Index);
+    value.EmitGet(cg);
     // TODO: check for compatibility between types
-    if(val.Type.IsValueType) cg.ILG.Emit(OpCodes.Box, val.Type);
+    if(value.Type.IsValueType) cg.ILG.Emit(OpCodes.Box, value.Type);
     cg.ILG.Emit(OpCodes.Stelem_Ref);
   }
 
-  void GetArray(CodeGenerator cg)
-  { int depth = Depth;
-    if(cg.Function!=null)
-    { if(!cg.Function.CreatesLocalEnvironment) depth--;
-      if(depth<=0 && Index<=cg.Function.Parameters.Length && cg.Function.MaxNames==cg.Function.Parameters.Length)
-      { cg.EmitArgGet(1);
-        return;
-      }
+  public override void EmitSet(CodeGenerator cg, Node value)
+  { if(value.ClearsStack) base.EmitSet(cg, value);
+    else
+    { GetArray(cg);
+      cg.EmitInt(Index);
+      EmitTypedNode(cg, value);
+      cg.ILG.Emit(OpCodes.Stelem_Ref);
     }
+  }
 
-    cg.EmitArgGet(0);
-    for(int i=0; i<Depth; i++) cg.EmitFieldGet(typeof(LocalEnvironment), "Parent");
-    cg.EmitFieldGet(typeof(LocalEnvironment), "Values");
+  void GetArray(CodeGenerator cg)
+  { if(Depth==0) cg.EmitArgGet(1);
+    else
+    { cg.EmitArgGet(0);
+      for(int i=1; i<Depth; i++) cg.EmitFieldGet(typeof(LocalEnvironment), "Parent");
+      cg.EmitFieldGet(typeof(LocalEnvironment), "Values");
+    }
   }
 
   Type SlotType;
@@ -147,10 +160,20 @@ public sealed class FieldSlot : Slot
     EmitSet(cg, temp);
     cg.FreeLocalTemp(temp);
   }
-  public override void EmitSet(CodeGenerator cg, Slot val)
+
+  public override void EmitSet(CodeGenerator cg, Slot value)
   { if(Instance!=null) Instance.EmitGet(cg);
-    val.EmitGet(cg);
+    value.EmitGet(cg);
     cg.EmitFieldSet(Info);
+  }
+
+  public override void EmitSet(CodeGenerator cg, Node value)
+  { if(value.ClearsStack) base.EmitSet(cg, value);
+    else
+    { if(Instance!=null) Instance.EmitGet(cg);
+      EmitTypedNode(cg, value);
+      cg.EmitFieldSet(Info);
+    }
   }
 
   public FieldInfo Info;
@@ -213,12 +236,23 @@ public sealed class NamedFrameSlot : Slot
     cg.FreeLocalTemp(temp);
   }
 
-  public override void EmitSet(CodeGenerator cg, Slot val)
+  public override void EmitSet(CodeGenerator cg, Slot value)
   { SetupBinding(cg);
     Binding.EmitGet(cg);
     if(Options.Current.Debug) cg.EmitCall(typeof(Ops), "CheckBinding");
-    val.EmitGet(cg);
+    value.EmitGet(cg);
     cg.EmitFieldSet(typeof(Binding), "Value");
+  }
+
+  public override void EmitSet(CodeGenerator cg, Node value)
+  { if(value.ClearsStack) base.EmitSet(cg, value);
+    else
+    { SetupBinding(cg);
+      Binding.EmitGet(cg);
+      if(Options.Current.Debug) cg.EmitCall(typeof(Ops), "CheckBinding");
+      value.Emit(cg);
+      cg.EmitFieldSet(typeof(Binding), "Value");
+    }
   }
 
   public Slot Frame, Binding;

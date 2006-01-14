@@ -370,9 +370,8 @@ public sealed class InterpreterEnvironment
 public sealed class LocalEnvironment
 { public LocalEnvironment(LocalEnvironment parent, object[] values) { Parent=parent; Values=values; }
   public LocalEnvironment(LocalEnvironment parent, int length) { Parent=parent; Values=new object[length]; }
-  public LocalEnvironment(LocalEnvironment parent, object[] values, int length)
-  { Parent=parent; Values=new object[length];
-    Array.Copy(values, Values, values.Length);
+  public LocalEnvironment(LocalEnvironment parent, int length, object[] values)
+  { Parent=parent; Values=new object[length]; values.CopyTo(Values, 0);
   }
 
   public readonly LocalEnvironment Parent;
@@ -1434,6 +1433,7 @@ public sealed class Ops
   public static readonly object[] EmptyArray = new object[0];
 
   [ThreadStatic] public static Template CurrentFunction;
+  [ThreadStatic] public static object LastPtr;
 
   static bool IsIn(Type[] typeArr, Type type)
   { for(int i=0; i<typeArr.Length; i++) if(typeArr[i]==type) return true;

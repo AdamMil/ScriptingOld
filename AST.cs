@@ -27,8 +27,10 @@ using System.Reflection.Emit;
 
 // TODO: optimize compiler by caching methods, constructors, fields, properties, etc
 // TODO: optimize code generation by not creating temp slots to hold the value of a node that's just a local variable
-//       lookup
-// TODO: optimize by not using temporaries for constant expressions
+//       lookup or a constant expression
+// TODO: implement some basic block analysis to detect and eliminate unreachable code
+// TODO: possibly create a cache of commonly used data structures (eg ArrayLists) as well, so we don't have to create
+//       so many of them everywhere
 namespace Scripting
 {
 
@@ -360,7 +362,7 @@ public abstract class Language
       case "string[]":
         node.CheckArity(2);
         if(etype==typeof(void)) { cg.EmitVoids(args); return true; }
-        cg.EmitString(args[0]);
+        args[0].EmitString(cg);
         { Type type=typeof(int);
           args[1].Emit(cg, ref type);
           if(type!=typeof(int)) cg.EmitCall(typeof(Ops), "ToInt");
@@ -378,7 +380,7 @@ public abstract class Language
           if(etype==typeof(void)) { cg.EmitVoids(args); return true; }
         }
         else node.CheckArity(3);
-        cg.EmitTypedNode(args[0], typeof(object[]));
+        args[0].EmitTyped(cg, typeof(object[]));
         { Type type = typeof(int);
           args[1].Emit(cg, ref type);
           if(type!=typeof(int)) cg.EmitCall(typeof(Ops), "ToInt");
@@ -388,7 +390,7 @@ public abstract class Language
         { args[2].Emit(cg);
           if(etype==typeof(void)) { cg.ILG.Emit(OpCodes.Stelem_Ref); return true; }
           else
-          { cg.ILG.Emit(OpCodes.Dup);
+          { cg.Dup();
             Slot tmp = cg.AllocLocalTemp(typeof(object));
             tmp.EmitSet(cg);
             cg.ILG.Emit(OpCodes.Stelem_Ref);
@@ -548,19 +550,22 @@ public sealed class Options
 #endregion
 
 #region Parameter
-public enum ParamType { Required, Optional, List, Dict }
+public enum ParamType : byte { Required, Optional, List, Dict }
 
 public struct Parameter
 { public Parameter(string name) : this(name, ParamType.Required) { }
   public Parameter(string name, Node defaultValue) : this(name, ParamType.Optional) { Default=defaultValue; }
-  public Parameter(string name, ParamType type) { Name=new Name(name); Type=type; Default=null; }
-  public Parameter(Name name, ParamType type, Node defaultValue) { Name=name; Type=type; Default=defaultValue; }
+  public Parameter(string name, ParamType type) { Name=new Name(name); Type=type; Default=null; Closed=false; }
+  public Parameter(Name name, ParamType type, Node defaultValue)
+  { Name=name; Type=type; Default=defaultValue; Closed=false;
+  }
 
   public override int GetHashCode() { return Name.GetHashCode(); }
 
   public Name Name;
   public Node Default;
   public ParamType Type;
+  public bool Closed;
   
   public static void CheckParms(Parameter[] parms, out int numRequired, out int optionalStart, out int numOptional,
                                 out bool hasList, out bool hasDict)
@@ -687,10 +692,12 @@ public sealed class AST
         if(top==null) func.Body.Walk(this); // we don't need to resolve names in evaluated code
         else
         { int oldFree=freeStart, oldBound=boundStart, oldBlock=blockStart;
+          ArrayList oldClosedParams=closedParams, oldClosedVars=closedVars;
 
           freeStart  = free.Count;
           boundStart = bound.Count;
           blockStart = blocks==null ? 0 : blocks.Count;
+          closedVars = new ArrayList(); closedParams = new ArrayList();
 
           foreach(Parameter parm in func.Parameters)
           { bound.Add(parm.Name);
@@ -705,27 +712,47 @@ public sealed class AST
             int index = IndexOf(name.String, bound, oldBound, boundStart);
             if(index==-1) // if it's not bound to any local variables of the previous function in the function stack...
             { if(oldFunc==top) name.Depth = Scripting.Name.Global; // it's global if oldFunc==top
-              else // otherwise mark it for evaluation in the next frame up the stack
-              { if(func.MaxNames!=0) name.Depth++; // if this function adds a local environment, increase the depth
-                free[freeStart++] = name;
+              else
+              { free[freeStart++] = name; // otherwise mark it for evaluation in the next frame up the stack
+                name.Depth++;             // and increase its depth by one
               }
             }
             else // it's bound to a local variable in the previous function in the stack
             { Name bname = (Name)bound[index];
               int argPos = IndexOf(name.String, oldFunc.Parameters);
-              if(bname.Depth==Scripting.Name.Local && argPos==-1) // if it's not a parameter
-              { bname.Depth = 0; // set its depth to zero to indicate that it's coming from the LocalEnvironment
-                bname.Index = name.Index = oldFunc.MaxNames++; // and set the proper index, making sure to update
-                bname.Type  = name.Type;                       // both instances of the name
+              if(argPos==-1 && bname.Depth==Scripting.Name.Local) // if it's not a parameter and it's local
+              { bname.Depth = 1; // set its depth to one to indicate that it's coming from the LocalEnvironment
+                bname.Index = name.Index = oldFunc.ClosedVars++; // and set the proper index, making sure to update
+                bname.Type  = name.Type;                         // both instances of the name
+                oldClosedVars.Add(name);
+                oldClosedVars.Add(bname);
               }
-              else // it's a parameter
-              { if(argPos!=-1) oldFunc.ArgsClosed = true; // mark the fact that the function's arguments are used in a closure
-                name.Index = bname.Index; // and set the correct index
+              else if(bname.Depth==Scripting.Name.Global) { name.Depth = bname.Depth; continue; }
+              else if(argPos!=-1)
+              { name.Index = oldFunc.CloseParameter(argPos); // CloseParameter() sets bname.Depth
+                oldClosedParams.Add(name);
               }
-              if(func.MaxNames!=0) name.Depth++; // if this function adds a local environment, increase the depth
+              else // the bound variable is already handled (or explicitly bound), so just update 'name'
+              { name.Depth = bname.Depth;
+                name.Index = bname.Index;
+                name.Type  = bname.Type;
+                oldClosedVars.Add(name);
+              }
 
               LambdaNode lambda = values[index] as LambdaNode; // if the function is bound to a lambda throughout its
               if(lambda!=null) lambda.Binding = name;          // scope, we can use that info to optimize tail calls
+            }
+          }
+
+          if(func.ClosedParams!=0)
+          { // if the function closes parameters but not variables, the parameter indices will be wrong. fix them.
+            if(func.ClosedVars==0)
+            { for(int i=0; i<func.Parameters.Length; i++) func.Parameters[i].Name.Index = i;
+              foreach(Name name in closedParams) name.Index = IndexOf(name.String, func.Parameters);
+            }
+            else // if it closes both parameters and variables, the indices of the variables will be wrong.
+            { int numClosed = closedParams.Count;
+              foreach(Name name in closedVars) name.Index += numClosed;
             }
           }
 
@@ -734,6 +761,7 @@ public sealed class AST
           free.RemoveRange(freeStart, free.Count-freeStart);
           if(blocks!=null) blocks.RemoveRange(blockStart, blocks.Count-blockStart);
           boundStart=oldBound; freeStart=oldFree; blockStart=oldBlock;
+          closedParams=oldClosedParams; closedVars=oldClosedVars;
         }
         func=oldFunc; inTry=oldTry; inCatch=oldCatch;
         return false;
@@ -870,7 +898,7 @@ public sealed class AST
 
         if(optimize==OptimizeType.Speed)
         { MemberNode an = node as MemberNode;
-          if(an!=null && an.Value is VariableNode && an.Members.IsConstant)
+          if(an!=null && an.EnableCache && an.Value is VariableNode && an.Members.IsConstant)
           { object obj = an.Members.Evaluate();
             if(!(obj is string))
               throw new SyntaxErrorException("MemberNode expects a string value as the second argument");
@@ -902,7 +930,7 @@ public sealed class AST
       { if(func==top) name.Depth = Scripting.Name.Global;
         else
         { index = IndexOf(name.String, free);
-          if(index==-1) { free.Add(name); name.Depth=0; }
+          if(index==-1) { free.Add(name); name.Depth=1; }
           else { name = (Name)free[index]; return true; }
         }
       }
@@ -940,7 +968,7 @@ public sealed class AST
     LambdaNode func, top;
     ExceptionNode inTry;
     Hashtable memberNodes;
-    ArrayList blocks, bound, free, values;
+    ArrayList blocks, bound, free, values, closedVars, closedParams;
     Stack tryBlocks;
     int boundStart, freeStart, blockStart;
     OptimizeType optimize;
@@ -982,9 +1010,24 @@ public abstract class Node
   public void Emit(CodeGenerator cg)
   { Type type = typeof(object);
     Emit(cg, ref type);
+    if(type.IsValueType) cg.EmitConvertTo(typeof(object), type);
   }
 
   public abstract void Emit(CodeGenerator cg, ref Type etype);
+
+  public void EmitString(CodeGenerator cg) { EmitTyped(cg, typeof(string)); }
+
+  public void EmitTyped(CodeGenerator cg, Type desired)
+  { Type type = desired;
+    Emit(cg, ref type);
+    if(!AreEquivalent(type, desired))
+    { if(!desired.IsValueType) cg.ILG.Emit(OpCodes.Castclass, desired);
+      else
+      { cg.ILG.Emit(OpCodes.Unbox, desired);
+        cg.EmitIndirectLoad(desired);
+      }
+    }
+  }
 
   public void EmitVoid(CodeGenerator cg)
   { if(!IsConstant)
@@ -1029,7 +1072,7 @@ public abstract class Node
   }
 
   public static void EmitConstant(CodeGenerator cg, object value, ref Type etype)
-  { if(etype==null) cg.ILG.Emit(OpCodes.Ldnull);
+  { if(etype==null) cg.EmitNull();
     else if(etype==typeof(void)) return;
     else
     { value = TryConvert(value, ref etype);
@@ -1135,8 +1178,8 @@ public sealed class AssertNode : WrapperNode
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(Options.Current.Debug) Node.Emit(cg, ref etype);
-    else if(Tail) { cg.ILG.Emit(OpCodes.Ldnull); TailReturn(cg); }
-    else if(etype!=typeof(void)) { cg.ILG.Emit(OpCodes.Ldnull); etype = typeof(object); }
+    else if(Tail) { cg.EmitNull(); TailReturn(cg); }
+    else if(etype!=typeof(void)) { cg.EmitNull(); etype = typeof(object); }
   }
 }
 #endregion
@@ -1154,7 +1197,7 @@ public sealed class BlockNode : WrapperNode
     bool hasReturnSlot = HasEarlyExit && etype!=typeof(void);
     bool usingParent = false;
     if(hasReturnSlot)
-    { cg.ILG.Emit(OpCodes.Ldnull);
+    { cg.EmitNull();
       if(Tail && Parent!=null)
       { ReturnSlot = Parent.ReturnSlot;
         usingParent = true;
@@ -1178,7 +1221,7 @@ public sealed class BlockNode : WrapperNode
     if(etype==typeof(void)) Node.EmitVoid(cg);
     else Node.Emit(cg, ref etype);
 
-    if(etype!=returnType && returnType==typeof(void)) { cg.ILG.Emit(OpCodes.Ldnull); returnType=etype=typeof(object); }
+    if(etype!=returnType && returnType==typeof(void)) { cg.EmitNull(); returnType=etype=typeof(object); }
     else etype = returnType;
 
     if(!hasReturnSlot)
@@ -1256,7 +1299,7 @@ public sealed class BodyNode : Node
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(Forms.Length==0)
     { if(etype!=typeof(void))
-      { cg.ILG.Emit(OpCodes.Ldnull);
+      { cg.EmitNull();
         etype = null;
       }
     }
@@ -1384,7 +1427,7 @@ public sealed class CallNode : Node
           throw new TargetParameterCountException(
             string.Format("{0} expects {1}{2} args, but is being passed {3}",
                           vn.Name, InFunc.HasList ? "at least " : "", positional, Args.Length));
-        // TODO: handle arguments that are try blocks
+        // TODO: handle arguments that clear the stack
         for(int i=0; i<positional; i++) Args[i].Expression.Emit(cg);
         if(InFunc.HasList)
           Options.Current.Language.EmitPackedArguments(cg, GetArgNodes(), positional, Args.Length-positional);
@@ -1408,7 +1451,7 @@ public sealed class CallNode : Node
     Node[] nodes = GetArgNodes(false);
     if(NumLists==0 && NumDicts==0)
     { if(NumNamed==0)
-      { cg.EmitTypedNode(Function, typeof(IProcedure));
+      { Function.EmitTyped(cg, typeof(IProcedure));
         if(!hasTryArg) cg.EmitObjectArray(nodes);
         else
         { ftmp = cg.AllocLocalTemp(typeof(IProcedure), keepAround);
@@ -1419,7 +1462,7 @@ public sealed class CallNode : Node
         }
       }
       else
-      { cg.EmitTypedNode(Function, typeof(IFancyProcedure));
+      { Function.EmitTyped(cg, typeof(IFancyProcedure));
         if(!hasTryArg)
         { cg.EmitObjectArray(nodes, 0, nodes.Length-NumNamed);
           EmitKeywordNames(cg);
@@ -1476,10 +1519,10 @@ public sealed class CallNode : Node
         else
         { if(runlen!=0) EmitAndStoreRun(cg, atmp, ri++, nodes, hasTryArg, rsi, runlen, i);
 
-          cg.ILG.Emit(OpCodes.Dup);
+          cg.Dup();
           cg.EmitInt(ri++);
           cg.ILG.Emit(OpCodes.Ldelema, typeof(CallArg));
-          cg.ILG.Emit(OpCodes.Dup);
+          cg.Dup();
           Args[i].Expression.Emit(cg);
           cg.EmitFieldSet(typeof(CallArg), "Value");
           cg.EmitFieldGet(typeof(CallArg), "ListType");
@@ -1496,10 +1539,10 @@ public sealed class CallNode : Node
         else values = null;
 
         if(atmp!=null) atmp.EmitGet(cg);
-        else cg.ILG.Emit(OpCodes.Dup);
+        else cg.Dup();
         cg.EmitInt(ri++);
         cg.ILG.Emit(OpCodes.Ldelema, typeof(CallArg));
-        cg.ILG.Emit(OpCodes.Dup);
+        cg.Dup();
         EmitKeywordNames(cg);
         cg.EmitFieldSet(typeof(CallArg), "Value");
         if(values==null) EmitKeywordValues(cg, false);
@@ -1521,10 +1564,10 @@ public sealed class CallNode : Node
           }
           
           if(atmp!=null) atmp.EmitGet(cg);
-          else cg.ILG.Emit(OpCodes.Dup);
+          else cg.Dup();
           cg.EmitInt(ri++);
           cg.ILG.Emit(OpCodes.Ldelema, typeof(CallArg));
-          cg.ILG.Emit(OpCodes.Dup);
+          cg.Dup();
           if(value==null) Args[i].Expression.Emit(cg);
           else
           { value.EmitGet(cg);
@@ -1671,6 +1714,13 @@ public sealed class CallNode : Node
   public readonly int NumLists, NumDicts, NumRuns, NumNamed;
   public LambdaNode InFunc;
 
+  public static Argument[] NodesToArgs(Node[] nodes)
+  { if(nodes==null) return null;
+    Argument[] args = new Argument[nodes.Length];
+    for(int i=0; i<nodes.Length; i++) args[i] = new Argument(nodes[i]);
+    return args;
+  }
+
   void AddRun(CallArg[] cargs, int ai, Node[] nodes, int start, int length, int end)
   { if(length!=1) cargs[ai] = new CallArg(MakeObjectArray(nodes, start, length), length);
     else
@@ -1695,11 +1745,11 @@ public sealed class CallNode : Node
     }
 
     if(atmp!=null) atmp.EmitGet(cg);
-    else cg.ILG.Emit(OpCodes.Dup);
+    else cg.Dup();
 
     cg.EmitInt(ai);
     cg.ILG.Emit(OpCodes.Ldelema, typeof(CallArg));
-    cg.ILG.Emit(OpCodes.Dup);
+    cg.Dup();
 
     if(hasTryArg)
     { value.EmitGet(cg);
@@ -1709,7 +1759,7 @@ public sealed class CallNode : Node
     else cg.EmitObjectArray(nodes, start, length);
 
     cg.EmitFieldSet(typeof(CallArg), "Value");
-    if(length==1) cg.ILG.Emit(OpCodes.Ldnull);
+    if(length==1) cg.EmitNull();
     else cg.EmitConstantObject(length);
     cg.EmitFieldSet(typeof(CallArg), "Type");
   }
@@ -1718,7 +1768,7 @@ public sealed class CallNode : Node
   { cg.EmitNewArray(typeof(string), NumNamed);
     for(int i=0,j=0; i<Args.Length; i++)
       if(Args[i].Name!=null)
-      { cg.ILG.Emit(OpCodes.Dup);
+      { cg.Dup();
         cg.EmitInt(j++);
         cg.EmitString(Args[i].Name);
         cg.ILG.Emit(OpCodes.Stelem_Ref);
@@ -1757,13 +1807,7 @@ public sealed class CallNode : Node
   static bool FuncNameMatch(Name var, LambdaNode func)
   { Name binding = func.Binding;
     return binding!=null && var.Index==binding.Index && var.String==binding.String &&
-           var.Depth==binding.Depth+(func.MaxNames!=0 ? 1 : 0);
-  }
-  
-  static Argument[] NodesToArgs(Node[] nodes)
-  { Argument[] args = new Argument[nodes.Length];
-    for(int i=0; i<nodes.Length; i++) args[i] = new Argument(nodes[i]);
-    return args;
+           var.Depth==binding.Depth+(func.CreatesLocalEnvironment ? 1 : 0);
   }
 }
 #endregion
@@ -1783,7 +1827,7 @@ public class DeleteNode : SetNodeBase
   { cg.MarkPosition(this);
     foreach(Node n in Nodes) EmitDelete(cg, n);
     if(etype!=typeof(void))
-    { cg.ILG.Emit(OpCodes.Ldnull);
+    { cg.EmitNull();
       etype = typeof(object);
     }
     TailReturn(cg);
@@ -1957,8 +2001,8 @@ public abstract class ExceptionNode : Node
         }
 
         if(ex.Var!=null)
-        { if(eslot!=null) eslot.EmitGet(cg);
-          cg.EmitSet(ex.Var);
+        { if(eslot==null) cg.EmitSet(ex.Var);
+          else cg.EmitSet(ex.Var, eslot);
         }
 
         if(returnSlot==null || ex.Body.GetNodeType()==typeof(void)) ex.Body.EmitVoid(cg);
@@ -1993,7 +2037,7 @@ public abstract class ExceptionNode : Node
       returnSlot = null;
       TailReturn(cg);
     }
-    else if(etype!=typeof(void)) cg.ILG.Emit(OpCodes.Ldnull);
+    else if(etype!=typeof(void)) cg.EmitNull();
 
     leaveLabel = new Label();
   }
@@ -2113,7 +2157,7 @@ public sealed class IfNode : Node
     { if(Ops.IsTrue(Test.Evaluate())) IfTrue.Emit(cg, ref etype);
       else if(IfFalse!=null) IfFalse.Emit(cg, ref etype);
       else if(etype!=typeof(void))
-      { cg.ILG.Emit(OpCodes.Ldnull);
+      { cg.EmitNull();
         etype = typeof(object);
       }
     }
@@ -2181,7 +2225,7 @@ public sealed class IfNode : Node
         }
         if(hasEnd) cg.ILG.MarkLabel(endlbl);
       }
-      if(truetype==typeof(void) && etype!=typeof(void)) cg.ILG.Emit(OpCodes.Ldnull);
+      if(truetype==typeof(void) && etype!=typeof(void)) cg.EmitNull();
       if(!ifTrue.Tail) TailReturn(cg);
     }
   }
@@ -2275,7 +2319,7 @@ public sealed class LambdaNode : Node
   public LambdaNode(Parameter[] parms, Node body) : this(null, parms, body) { }
   public LambdaNode(string name, Parameter[] parms, Node body)
   { Parameter.CheckParms(parms, out NumRequired, out OptionalStart, out NumOptional, out HasList, out HasDict);
-    Name=name; Parameters=parms; Body=body; MaxNames=parms.Length;
+    Name=name; Parameters=parms; Body=body;
 
     for(int i=0; i<parms.Length; i++)
     { parms[i].Name.Index = i;
@@ -2283,7 +2327,13 @@ public sealed class LambdaNode : Node
     }
   }
 
-  public bool CreatesLocalEnvironment { get { return MaxNames!=Parameters.Length || ArgsClosed; } }
+  public bool CreatesLocalEnvironment { get { return ClosedVars!=0 || ClosedParams!=0; } }
+
+  public int CloseParameter(int i)
+  { Parameters[i].Closed = true;
+    Parameters[i].Name.Depth = 1;
+    return Parameters[i].Name.Index = ClosedParams++;
+  }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { cg.MarkPosition(this);
@@ -2301,7 +2351,7 @@ public sealed class LambdaNode : Node
         icg.EmitInt(NumRequired);
         icg.EmitBool(HasList);
         icg.EmitBool(HasDict);
-        icg.EmitBool(ArgsClosed);
+        icg.EmitBool(ClosedParams!=0 && ClosedVars==0);
         icg.EmitNew(typeof(Template), typeof(IntPtr), typeof(Language), typeof(string), typeof(string[]), typeof(int),
                     typeof(bool), typeof(bool), typeof(bool));
         tmpl.EmitSet(icg);
@@ -2351,13 +2401,12 @@ public sealed class LambdaNode : Node
   public Name Binding;
   public string Name;
   public Label StartLabel;
-  public int MaxNames;
+  public int ClosedParams, ClosedVars;
   public readonly int NumRequired, NumOptional, OptionalStart;
   public readonly bool HasList, HasDict;
-  public bool ArgsClosed;
 
   void EmitDefaults(CodeGenerator cg)
-  { if(NumOptional==0) { cg.ILG.Emit(OpCodes.Ldnull); return; }
+  { if(NumOptional==0) { cg.EmitNull(); return; }
 
     bool constant = true;
     for(int i=0; i<NumOptional; i++) if(!Parameters[i+OptionalStart].Default.IsConstant) { constant=false; break; }
@@ -2380,18 +2429,36 @@ public sealed class LambdaNode : Node
     if(Name!=null) name += "_"+Name;
     icg = cg.TypeGenerator.DefineStaticMethod(name, typeof(object), typeof(LocalEnvironment), typeof(object[]));
 
-    icg.Function  = this;
     icg.Namespace = new LocalNamespace(cg.Namespace, icg);
     if(CreatesLocalEnvironment)
     { icg.EmitArgGet(0);
-      if(Parameters.Length!=0) icg.EmitArgGet(1);
-      if(MaxNames==Parameters.Length)
+      if(ClosedVars==0)
+      { icg.EmitArgGet(1);
         icg.EmitNew(typeof(LocalEnvironment), typeof(LocalEnvironment), typeof(object[]));
+      }
+      else if(ClosedParams==0)
+      { icg.EmitInt(ClosedVars);
+        icg.EmitNew(typeof(LocalEnvironment), typeof(LocalEnvironment), typeof(int));
+      }
+      else if(ClosedParams==Parameters.Length)
+      { icg.EmitInt(ClosedParams+ClosedVars);
+        icg.EmitArgGet(1);
+        icg.EmitNew(typeof(LocalEnvironment), typeof(LocalEnvironment), typeof(int), typeof(object[]));
+      }
       else
-      { icg.EmitInt(MaxNames);
-        icg.EmitNew(typeof(LocalEnvironment),
-                    Parameters.Length==0 ? new Type[] { typeof(LocalEnvironment), typeof(int) }
-                                         : new Type[] { typeof(LocalEnvironment), typeof(object[]), typeof(int) });
+      { icg.EmitInt(ClosedParams+ClosedVars);
+        icg.EmitNew(typeof(LocalEnvironment), typeof(LocalEnvironment), typeof(int));
+        icg.Dup();
+        icg.EmitFieldGet(typeof(LocalEnvironment), "Values");
+        for(int i=0,j=0; i<Parameters.Length; i++)
+          if(Parameters[i].Closed)
+          { if(j!=ClosedParams-1) icg.Dup();
+            icg.EmitInt(j++);
+            icg.EmitArgGet(1);
+            icg.EmitInt(i);
+            icg.ILG.Emit(OpCodes.Ldelem_Ref);
+            icg.ILG.Emit(OpCodes.Stelem_Ref);
+          }
       }
       icg.EmitArgSet(0);
     }
@@ -2414,6 +2481,22 @@ public sealed class LambdaNode : Node
   }
 
   static Index lindex = new Index();
+}
+#endregion
+
+#region LastNode
+public sealed class LastNode : Node
+{ public override void Emit(Scripting.CodeGenerator cg, ref Type etype)
+  { if(etype!=typeof(void))
+    { cg.EmitFieldGet(typeof(Ops), "LastPtr");
+      etype = typeof(object);
+      TailReturn(cg);
+    }
+  }
+
+  public override object Evaluate() { return Ops.LastPtr; }
+  public override Type GetNodeType() { return typeof(object); }
+  public override void Walk(IWalker w) { w.Walk(this); w.PostWalk(this); }
 }
 #endregion
 
@@ -2448,10 +2531,7 @@ public sealed class LocalBindNode : Node
   public override void Emit(CodeGenerator cg, ref Type etype)
   { cg.MarkPosition(this);
     for(int i=0; i<Inits.Length; i++)
-      if(Inits[i]!=null)
-      { Inits[i].Emit(cg);
-        cg.EmitSet(Names[i]);
-      }
+      if(Inits[i]!=null) cg.EmitSet(Names[i], Inits[i]);
       else if(Options.Current.Debug)
       { cg.EmitFieldGet(typeof(Binding), "Unbound");
         cg.EmitSet(Names[i]);
@@ -2508,7 +2588,7 @@ public sealed class LocalBindNode : Node
 #region MarkerNode
 public abstract class MarkerNode : Node
 { public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(etype!=typeof(void)) { cg.ILG.Emit(OpCodes.Ldnull); etype=typeof(object); }
+  { if(etype!=typeof(void)) { cg.EmitNull(); etype=typeof(object); }
     TailReturn(cg);
   }
 
@@ -2528,7 +2608,7 @@ public sealed class MarkSourceNode : DebugNode
     // TODO: figure this out. cg.TypeGenerator.Assembly.Symbols.SetSource(System.Text.Encoding.UTF8.GetBytes(Code));
     if(Body!=null) Body.Emit(cg, ref etype);
     else if(etype!=typeof(void))
-    { cg.ILG.Emit(OpCodes.Ldnull);
+    { cg.EmitNull();
       etype = typeof(object);
     }
   }
@@ -2584,9 +2664,9 @@ public class MemberNode : Node
         cache = (Cache==null || Options.Current.IsPreCompilation ? new CachePromise() : Cache).GetCache(cg);
         done  = cg.ILG.DefineLabel();
 
-        cg.ILG.Emit(OpCodes.Dup);
+        cg.Dup();
         cg.ILG.Emit(OpCodes.Brfalse_S, isNull);
-        cg.ILG.Emit(OpCodes.Dup);
+        cg.Dup();
         Slot tmp = cg.AllocLocalTemp(typeof(object));
         tmp.EmitSet(cg);
         cg.EmitCall(typeof(MemberCache), "TypeFromObject"); // TODO: maybe we should inline this
@@ -2634,7 +2714,7 @@ public class MemberNode : Node
         tmp1.EmitSet(cg);
       }
       else { tmp1 = tmp2 = null; }
-      cg.EmitTypedNode(Members, typeof(string));
+      Members.EmitTyped(cg, typeof(string));
       if(tmp1!=null)
       { tmp2 = cg.AllocLocalTemp(typeof(string));
         tmp2.EmitSet(cg);
@@ -2717,6 +2797,47 @@ public sealed class OpNode : Node
 }
 #endregion
 
+#region PropMemberNode
+public sealed class PropMemberNode : MemberNode
+{ public PropMemberNode(Node value, Node member) : base(value, member) { }
+  public PropMemberNode(Node value, Node member, bool enableCache) : base(value, member, enableCache) { }
+
+  protected override void HandleThisPtr(Scripting.CodeGenerator cg)
+  { cg.Dup();
+    cg.EmitFieldSet(typeof(Ops), "LastPtr");
+  }
+
+  protected override void HandleThisPtr(Scripting.CodeGenerator cg, Slot slot)
+  { slot.EmitGet(cg);
+    cg.EmitFieldSet(typeof(Ops), "LastPtr");
+  }
+}
+#endregion
+
+#region PropertyNode
+public sealed class PropertyNode : WrapperNode
+{ public PropertyNode(Node value, Node member) : this(value, member, (Argument[])null, true) { }
+  public PropertyNode(Node value, Node member, Node[] extraArgs)
+    : this(value, member, CallNode.NodesToArgs(extraArgs), true) { }
+  public PropertyNode(Node value, Node member, Argument[] extraArgs) : this(value, member, extraArgs, true) { }
+  public PropertyNode(Node value, Node member, bool enableCache)
+    : this(value, member, (Argument[])null, enableCache) { }
+  public PropertyNode(Node value, Node member, Node[] extraArgs, bool enableCache)
+    : this(value, member, CallNode.NodesToArgs(extraArgs), enableCache) { }
+  public PropertyNode(Node value, Node member, Argument[] extraArgs, bool enableCache)
+  { Argument[] args;
+    if(extraArgs==null) args = new Argument[] { new Argument(new LastNode()) };
+    else
+    { args = new Argument[extraArgs.Length+1];
+      args[0] = new Argument(new LastNode());
+      extraArgs.CopyTo(args, 1);
+    }
+
+    Node = new CallNode(new PropMemberNode(value, member, enableCache), args);
+  }
+}
+#endregion
+
 #region RestartNode
 public sealed class RestartNode : JumpNode
 { public RestartNode(string name) : base(name) { }
@@ -2741,7 +2862,7 @@ public class SetNode : SetNodeBase
     Type type = GetNodeType();
     RHS.Emit(cg, ref type);
     for(int i=LHS.Length-1; i>=0; i--)
-    { if(i!=0 || etype!=typeof(void)) cg.ILG.Emit(OpCodes.Dup);
+    { if(i!=0 || etype!=typeof(void)) cg.Dup();
       EmitSet(cg, LHS[i], type);
     }
     if(etype!=typeof(void)) EmitTryConvert(cg, type, ref etype);
@@ -2815,7 +2936,7 @@ public class SetNode : SetNodeBase
   { if(lhs is VariableNode)
     { VariableNode vn = (VariableNode)lhs;
       if(Type==SetType.Alter || vn.Name.Depth!=Name.Global)
-      { EmitStrictConvert(cg, onStack, vn.GetNodeType());
+      { EmitStrictConvert(cg, onStack, vn.GetNodeType()); // TODO: why not use cg.EmitConvertTo() ?
         cg.EmitSet(vn.Name);
       }
       else
@@ -2888,7 +3009,7 @@ public sealed class ThrowNode : Node
     if(Exception==null) cg.ILG.Emit(OpCodes.Rethrow);
     else
     { Exception.Emit(cg);
-      if(Objects==null || Objects.Length==0) cg.ILG.Emit(OpCodes.Ldnull);
+      if(Objects==null || Objects.Length==0) cg.EmitNull();
       else if(!HasTryNode(Objects)) cg.EmitObjectArray(Objects);
       else
       { bool keepAround = HasInterrupt(Objects);
@@ -2907,7 +3028,7 @@ public sealed class ThrowNode : Node
       cg.EmitCall(typeof(Ops), "MakeException");
       cg.ILG.Emit(OpCodes.Throw);
       if(etype!=typeof(void))
-      { cg.ILG.Emit(OpCodes.Ldnull);
+      { cg.EmitNull();
         etype = typeof(object);
       }
     }
@@ -3077,7 +3198,7 @@ public sealed class ValueBindNode : Node
         skip:
         if(constValue==this)
         { if(bindings.Length!=1)
-          { cg.EmitTypedNode(Inits[i], typeof(MultipleValues));
+          { Inits[i].EmitTyped(cg, typeof(MultipleValues));
             cg.EmitInt(bindings.Length);
             cg.EmitCall(typeof(Ops), "CheckValues");
           }
@@ -3093,15 +3214,14 @@ public sealed class ValueBindNode : Node
               end = cg.ILG.DefineLabel();
               useEnd = true;
 
-              cg.ILG.Emit(OpCodes.Dup);
+              cg.Dup();
               Slot tmp = cg.AllocLocalTemp(typeof(object));
               tmp.EmitSet(cg);
               cg.ILG.Emit(OpCodes.Isinst, typeof(MultipleValues));
-              cg.ILG.Emit(OpCodes.Dup);
+              cg.Dup();
               cg.ILG.Emit(OpCodes.Brtrue_S, loop);
               cg.ILG.Emit(OpCodes.Pop);
-              tmp.EmitGet(cg);
-              cg.EmitSet(bindings[0]);
+              cg.EmitSet(bindings[0], tmp);
               cg.ILG.Emit(OpCodes.Br, end);
 
               cg.FreeLocalTemp(tmp);
@@ -3109,7 +3229,7 @@ public sealed class ValueBindNode : Node
             }
           }
           for(int j=0; j<bindings.Length; j++)
-          { if(j!=bindings.Length-1) cg.ILG.Emit(OpCodes.Dup);
+          { if(j!=bindings.Length-1) cg.Dup();
             cg.EmitInt(j);
             cg.ILG.Emit(OpCodes.Ldelem_Ref);
             cg.EmitSet(bindings[j]);
@@ -3119,15 +3239,11 @@ public sealed class ValueBindNode : Node
         else if(constValue is object[])
         { object[] values = (object[])constValue;
           for(int j=0; j<bindings.Length; j++)
-          { if(values[j] is Node) ((Node)values[j]).Emit(cg);
-            else cg.EmitConstantObject(values[j]);
-            cg.EmitSet(bindings[j]);
-          }
+            cg.EmitSet(bindings[j], values[j] is Node ? (Node)values[j] : new LiteralNode(values[j]));
         }
         else
         { Debug.Assert(bindings.Length==1);
-          cg.EmitConstantObject(constValue);
-          cg.EmitSet(bindings[0]);
+          cg.EmitSet(bindings[0], new LiteralNode(constValue));
         }
       }
       Body.Emit(cg, ref etype);
@@ -3235,7 +3351,7 @@ public sealed class VariableNode : Node
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(Options.Current.Debug && !Name.Type.IsValueType) // FIXME: add use-of-unassigned-variable check for value types
     { cg.EmitGet(Name);
-      cg.ILG.Emit(OpCodes.Dup);
+      cg.Dup();
       cg.EmitString(Name.String);
       cg.EmitCall(typeof(Ops), "CheckVariable");
       etype = Name.Type;
@@ -3267,7 +3383,7 @@ public sealed class VariableNode : Node
 
 #region VectorNode
 public sealed class VectorNode : Node
-{ public VectorNode(Node[] items) { Items=items; }
+{ public VectorNode(Node[] items) { Items = items; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(etype==typeof(void))
@@ -3286,7 +3402,6 @@ public sealed class VectorNode : Node
   }
 
   public override object Evaluate() { return MakeObjectArray(Items); }
-
   public override Type GetNodeType() { return typeof(object[]); }
 
   public override void MarkTail(bool tail)
