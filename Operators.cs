@@ -237,7 +237,7 @@ public abstract class ComparisonOperator : Operator
           }
 
           if(i!=args.Length-1)
-          { cg.ILG.Emit(OpCodes.Dup);
+          { cg.Dup();
             a.EmitSet(cg);
           }
 
@@ -745,7 +745,7 @@ public sealed class LogicalAndOperator : Operator
         args[i].Emit(cg, ref type);
         if(type==typeof(bool) || type==typeof(CodeGenerator.negbool))
         { if(type==typeof(CodeGenerator.negbool)) cg.EmitLogicalNot();
-          cg.ILG.Emit(OpCodes.Dup);
+          cg.Dup();
           cg.EmitCall(typeof(Ops), "FromBool");
           tmp.EmitSet(cg);
         }
@@ -792,7 +792,7 @@ public sealed class LogicalOrOperator : Operator
         args[i].Emit(cg, ref type);
         if(type==typeof(bool) || type==typeof(CodeGenerator.negbool))
         { if(type==typeof(CodeGenerator.negbool)) cg.EmitLogicalNot();
-          cg.ILG.Emit(OpCodes.Dup);
+          cg.Dup();
           cg.EmitCall(typeof(Ops), "FromBool");
           tmp.EmitSet(cg);
         }

@@ -74,6 +74,8 @@ public class CodeGenerator
     EmitCall(typeof(Ops), "FromBool");
   }
 
+  public void Dup() { ILG.Emit(OpCodes.Dup); }
+
   public void EmitArgGet(int index)
   { if(!MethodBase.IsStatic) index++;
     switch(index)
@@ -204,6 +206,8 @@ public class CodeGenerator
   public void EmitDelete(Name name) { Namespace.DeleteSlot(name); }
   public void EmitGet(Name name) { Namespace.GetSlot(name).EmitGet(this); }
   public void EmitSet(Name name) { Namespace.GetSlot(name).EmitSet(this); }
+  public void EmitSet(Name name, Slot value) { Namespace.GetSlot(name).EmitSet(this, value); }
+  public void EmitSet(Name name, Node value) { Namespace.GetSlot(name).EmitSet(this, value); }
 
   public void EmitPropGet(Type type, string name) { EmitPropGet(type.GetProperty(name, SearchAll)); }
   public void EmitPropGet(PropertyInfo pi) { EmitCall(pi.GetGetMethod()); }
@@ -382,9 +386,10 @@ public class CodeGenerator
     }
   }
 
+  public void EmitNull() { ILG.Emit(OpCodes.Ldnull); }
+
   public void EmitObjectArray(Node[] exprs) { EmitObjectArray(exprs, 0, exprs.Length, false); }
   public void EmitObjectArray(Node[] exprs, int start, int length) { EmitObjectArray(exprs, start, length, false); }
-
   public Slot EmitObjectArray(Node[] exprs, bool allocate)
   { return EmitObjectArray(exprs, 0, exprs.Length, allocate);
   }
@@ -453,8 +458,6 @@ public class CodeGenerator
     else ILG.Emit(OpCodes.Ldstr, value);
   }
 
-  public void EmitString(Node node) { EmitTypedNode(node, typeof(string)); }
-
   public void EmitStringArray(string[] strings)
   { EmitNewArray(typeof(string), strings.Length);
     for(int i=0; i<strings.Length; i++)
@@ -475,18 +478,6 @@ public class CodeGenerator
     while(ns!=null && !(ns is TopLevelNamespace)) ns = ns.Parent;
     if(ns!=null) ((TopLevelNamespace)ns).TopSlot.EmitGet(this);
     else EmitFieldGet(typeof(TopLevel), "Current");
-  }
-
-  public void EmitTypedNode(Node node, Type desired)
-  { Type type = desired;
-    node.Emit(this, ref type);
-    if(!Node.AreEquivalent(type, desired))
-    { if(!desired.IsValueType) ILG.Emit(OpCodes.Castclass, desired);
-      else
-      { ILG.Emit(OpCodes.Unbox, desired);
-        EmitIndirectLoad(desired);
-      }
-    }
   }
 
   public void EmitTypeOf(Type type)
@@ -534,13 +525,13 @@ public class CodeGenerator
       ILG.MarkSequencePoint(TypeGenerator.Assembly.Symbols, startLine, startCol, endLine, endCol);
   }
 
-  public void SetupNamespace(int maxNames) { SetupNamespace(maxNames, null); }
-  public void SetupNamespace(int maxNames, Slot topSlot)
+  public void SetupNamespace(int closedVars) { SetupNamespace(closedVars, null); }
+  public void SetupNamespace(int closedVars, Slot topSlot)
   { Namespace = new TopLevelNamespace(this, topSlot);
-    if(maxNames!=0) // we have a top level closure
+    if(closedVars!=0) // we have a top level closure
     { Namespace = new LocalNamespace(Namespace, this);
       EmitArgGet(0);
-      EmitInt(maxNames);
+      EmitInt(closedVars);
       EmitNew(typeof(LocalEnvironment), typeof(LocalEnvironment), typeof(int));
       EmitArgSet(0);
     }
@@ -617,7 +608,6 @@ public class CodeGenerator
   }
 
   public Namespace Namespace;
-  public LambdaNode Function;
   public bool IsInterruptible;
 
   public readonly TypeGenerator TypeGenerator;

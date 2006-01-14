@@ -608,7 +608,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
       cg.EmitFieldSet(fi.DeclaringType, fi.Name);
     }
 
-    cg.ILG.Emit(OpCodes.Ldnull);
+    cg.EmitNull();
     cg.EmitReturn();
     cg.Finish();
 
@@ -671,7 +671,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
       if(ptypes!=null) // ptypes
       { cg.EmitNewArray(typeof(Type), sig.Params.Length);
         for(int i=0; i<sig.Params.Length; i++)
-        { cg.ILG.Emit(OpCodes.Dup);
+        { cg.Dup();
           cg.EmitInt(i);
           cg.EmitTypeOf(sig.Params[i]);
           cg.ILG.Emit(OpCodes.Stelem_Ref);
@@ -747,7 +747,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
           cg.ILG.Emit(OpCodes.Throw);
         }
         else
-        { cg.ILG.Emit(OpCodes.Dup);
+        { cg.Dup();
           len.EmitSet(cg);
           cg.EmitInt(min);
           if(min==max) cg.ILG.Emit(OpCodes.Bne_Un_S, bad);
@@ -841,7 +841,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
           cg.EmitInt(numnp);
           cg.ILG.Emit(OpCodes.Ldelem_Ref);
           cg.ILG.Emit(OpCodes.Isinst, typeof(Array));
-          cg.ILG.Emit(OpCodes.Dup);
+          cg.Dup();
           sa.EmitSet(cg);
           cg.ILG.Emit(OpCodes.Brfalse, pack); // if(sa==null) goto pack
 
@@ -849,7 +849,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
           cg.EmitCall(typeof(Array), "GetType");
           cg.EmitTypeOf(sig.Params[numnp]);
           cg.EmitCall(typeof(Ops), "ConvertTo", typeof(Type), typeof(Type));
-          cg.ILG.Emit(OpCodes.Dup); // used below
+          cg.Dup(); // used below
           iv.EmitSet(cg);
 
           // if(conv==Identity || conv==Reference) { stack.push(castTo(ptypes[numNP], sa)); goto call; }
@@ -872,7 +872,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
             cg.EmitCall(typeof(Array), "GetType");
             cg.EmitTypeOf(etype);
             cg.EmitCall(typeof(Ops), "ConvertTo", typeof(Type), typeof(Type));
-            cg.ILG.Emit(OpCodes.Dup); // used below
+            cg.Dup(); // used below
             iv.EmitSet(cg);
 
             // if(conv==Identity || conv==Reference) goto pack;
@@ -890,11 +890,11 @@ public sealed class ReflectedType : MemberContainer, IProcedure
             iv.EmitSet(cg);
             loop = cg.ILG.DefineLabel();
             cg.ILG.MarkLabel(loop);
-            cg.ILG.Emit(OpCodes.Dup);
+            cg.Dup();
             cg.ILG.Emit(OpCodes.Ldlen);
             iv.EmitGet(cg);
             cg.ILG.Emit(Options.Current.Debug ? OpCodes.Beq : OpCodes.Beq_S, call);
-            cg.ILG.Emit(OpCodes.Dup);
+            cg.Dup();
             iv.EmitGet(cg);
             if(ind) cg.ILG.Emit(OpCodes.Ldelema);
             sa.EmitGet(cg); // sa[i]
@@ -918,7 +918,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
           cg.EmitInt(numnp);
           cg.ILG.Emit(OpCodes.Sub);
           if(etype==typeof(object))
-          { cg.ILG.Emit(OpCodes.Dup); // used below
+          { cg.Dup(); // used below
             iv.EmitSet(cg);
           }
           cg.ILG.Emit(OpCodes.Newarr, etype);
@@ -946,7 +946,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
             cg.ILG.Emit(OpCodes.Ldlen);
             cg.ILG.Emit(OpCodes.Beq_S, call);
 
-            cg.ILG.Emit(OpCodes.Dup); // dup pa
+            cg.Dup(); // dup pa
             iv.EmitGet(cg);
             cg.EmitInt(numnp);
             cg.ILG.Emit(OpCodes.Sub);
@@ -985,7 +985,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
         }
         if(!sig.Return.IsValueType && numrefs==0) cg.ILG.Emit(OpCodes.Tailcall);
         cg.ILG.EmitCalli(OpCodes.Calli, sig.Convention, sig.Return, sig.Params, null);
-        if(sig.Return==typeof(void)) cg.ILG.Emit(OpCodes.Ldnull);
+        if(sig.Return==typeof(void)) cg.EmitNull();
         else if(sig.Return.IsValueType) cg.ILG.Emit(OpCodes.Box, sig.Return);
 
         foreach(Ref r in refs)
@@ -1152,7 +1152,7 @@ public sealed class Interop
           else
           { cg.EmitNewArray(typeof(object), sig.Params.Length);
             for(int i=0; i<sig.Params.Length; i++)
-            { cg.ILG.Emit(OpCodes.Dup);
+            { cg.Dup();
               cg.EmitInt(i);
               cg.EmitArgGet(i);
               if(sig.Params[i].IsValueType) cg.ILG.Emit(OpCodes.Box, sig.Params[i]);
@@ -1197,7 +1197,7 @@ public sealed class Interop
     { Slot tmp = cg.AllocLocalTemp(typeof(object));
       Label good = cg.ILG.DefineLabel();
 
-      cg.ILG.Emit(OpCodes.Dup);
+      cg.Dup();
       tmp.EmitSet(cg);
       cg.ILG.Emit(OpCodes.Isinst, type);
       cg.ILG.Emit(OpCodes.Brtrue_S, good);

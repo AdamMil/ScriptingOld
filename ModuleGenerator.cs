@@ -68,10 +68,10 @@ public sealed class ModuleGenerator
     cg.EmitPropGet(typeof(Builtins), "Instance");
     cg.EmitThis();
     cg.EmitFieldGet(typeof(Module), "TopLevel");
-    cg.ILG.Emit(OpCodes.Dup);
+    cg.Dup();
     cg.EmitFieldSet(typeof(TopLevel), "Current");
     cg.EmitCall(typeof(Module), "ImportAll");
-    cg.ILG.Emit(OpCodes.Ldnull);
+    cg.EmitNull();
     cg.EmitCall((MethodInfo)run);
     cg.ILG.Emit(OpCodes.Pop);
     cg.ILG.BeginFinallyBlock();
@@ -150,7 +150,7 @@ public sealed class ModuleGenerator
       topSlot.EmitGet(cg);
       cg.EmitFieldSet(typeof(TopLevel), "Current");
 
-      int maxNames = 0;
+      int closedVars = 0;
       LambdaNode[] nodes = new LambdaNode[attrs.Length];
       string sourceName = "<"+type.Name+" module>";
       for(int i=0; i<attrs.Length; i++)
@@ -161,10 +161,10 @@ public sealed class ModuleGenerator
           SnippetMaker.Generate(nodes[i]).Run(null);
           Options.Current.IsPreCompilation = false;
         }
-        if((attr.RunAt&RunAt.Runtime)!=0) maxNames = Math.Max(maxNames, nodes[i].MaxNames);
+        if((attr.RunAt&RunAt.Runtime)!=0) closedVars = Math.Max(closedVars, nodes[i].ClosedVars);
       }
 
-      cg.SetupNamespace(maxNames, topSlot);
+      cg.SetupNamespace(closedVars, topSlot);
 
       for(int i=0; i<attrs.Length; i++)
       { ScriptCodeAttribute attr = (ScriptCodeAttribute)attrs[i];
@@ -189,7 +189,7 @@ public sealed class ModuleGenerator
       staticTop.EmitGet(cg);
       cg.EmitTypeOf(type);
       cg.EmitCall(typeof(BuiltinModule).GetConstructor(new Type[] { typeof(TopLevel), typeof(Type) }));
-      cg.ILG.Emit(OpCodes.Ldnull);
+      cg.EmitNull();
       cg.EmitThis();
       cg.EmitFieldGet(typeof(CodeModule), "TopLevel");
       cg.EmitCall(run);
@@ -228,20 +228,20 @@ public sealed class ModuleGenerator
     cg.EmitLanguage(Options.Current.Language);
     cg.EmitPropGet(typeof(Language), "Builtins");
     cg.EmitNew(typeof(TopLevel));
-    cg.ILG.Emit(OpCodes.Dup);
+    cg.Dup();
     cg.EmitFieldSet(typeof(TopLevel), "Current");
     cg.EmitCall(typeof(Module), "ImportAll");
 
     cg = tg.DefineStaticMethod(MethodAttributes.Private, "Run", typeof(object),
                                new Type[] { typeof(LocalEnvironment) });
-    cg.SetupNamespace(body.MaxNames);
+    cg.SetupNamespace(body.ClosedVars);
     body.Body.Emit(cg);
     cg.Finish();
     MethodInfo run = (MethodInfo)cg.MethodBase;
 
     cg = tg.DefineStaticMethod("Main", typeof(void), typeof(string[]));
     // TODO: set argv
-    cg.ILG.Emit(OpCodes.Ldnull);
+    cg.EmitNull();
     cg.EmitCall(run);
     cg.ILG.Emit(OpCodes.Pop);
     cg.EmitReturn();
