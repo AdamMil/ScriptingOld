@@ -62,7 +62,6 @@ public sealed class AssemblyGenerator
   public Snippet GenerateSnippet(LambdaNode body) { return GenerateSnippet(body, "code_"+index.Next); }
   public Snippet GenerateSnippet(LambdaNode body, string typeName)
   { TypeGenerator tg = DefineType(TypeAttributes.Public|TypeAttributes.Sealed, typeName, typeof(Snippet));
-
     CodeGenerator cg = tg.DefineMethodOverride("Run", true);
     cg.SetupNamespace(body.ClosedVars);
     body.Body.Emit(cg);

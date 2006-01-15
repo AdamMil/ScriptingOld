@@ -352,16 +352,20 @@ public sealed class ReflectedType : MemberContainer, IProcedure
 
   public static readonly ReflectedType NullType = new ReflectedType(null);
 
-  sealed class Methods
-  { public Methods(Type type) { List=new ArrayList(); Type=type; }
-    public ArrayList List;
+  sealed class Methods : IDisposable
+  { public Methods(Type type) { List=CachedArray.Alloc(); Type=type; }
+    public CachedArray List;
     public Type Type;
+
+    public void Dispose() { List.Dispose(); }
   }
 
-  sealed class Properties
-  { public Properties(Type type) { Gets=new ArrayList(); Sets=new ArrayList(); Type=type; }
-    public ArrayList Gets, Sets;
+  sealed class Properties : IDisposable
+  { public Properties(Type type) { Gets=CachedArray.Alloc(); Sets=CachedArray.Alloc(); Type=type; }
+    public CachedArray Gets, Sets;
     public Type Type;
+    
+    public void Dispose() { Gets.Dispose(); Sets.Dispose(); }
   }
 
   struct Event
@@ -460,6 +464,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
           dict[set] = ps.Sets.Count==1 ? (object)MakeFunctionWrapper((MethodInfo)ps.Sets[0])
                         : new ReflectedFunctions((MethodInfo[])ps.Sets.ToArray(typeof(MethodInfo)), set);
       }
+      ps.Dispose();
     }
 
     // add methods
@@ -478,6 +483,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
       dict[de.Key] = ov.Type!=Type    ? FromType(ov.Type).Dict[de.Key] :
                      ov.List.Count==1 ? (object)MakeFunctionWrapper((MethodInfo)ov.List[0]) :
                      new ReflectedFunctions((MethodInfo[])ov.List.ToArray(typeof(MethodInfo)), (string)de.Key);
+      ov.Dispose();
     }
 
     flags = BindingFlags.Public | (includeInherited ? 0 : BindingFlags.DeclaredOnly);
