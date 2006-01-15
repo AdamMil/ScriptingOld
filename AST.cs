@@ -29,8 +29,6 @@ using System.Reflection.Emit;
 // TODO: optimize code generation by not creating temp slots to hold the value of a node that's just a local variable
 //       lookup or a constant expression
 // TODO: implement some basic block analysis to detect and eliminate unreachable code
-// TODO: possibly create a cache of commonly used data structures (eg ArrayLists) as well, so we don't have to create
-//       so many of them everywhere
 namespace Scripting
 {
 
@@ -69,6 +67,32 @@ public class ScriptCodeAttribute : Attribute
 public class ScriptNameAttribute : Attribute
 { public ScriptNameAttribute(string name) { Name=name; }
   public readonly string Name;
+}
+#endregion
+
+#region CachedArray
+public sealed class CachedArray : ArrayList, IDisposable
+{ public void Dispose()
+  { if(!disposed)
+    { CachedArray.Free(this);
+      disposed = true;
+    }
+  }
+
+  const int MaxArrays = 32;
+
+  public static CachedArray Alloc()
+  { lock(arrays) return arrays.Count==0 ? new CachedArray() : (CachedArray)arrays.Pop();
+  }
+
+  public static void Free(CachedArray array)
+  { array.Clear();
+    lock(arrays) if(arrays.Count<MaxArrays) arrays.Push(array);
+  }
+
+  bool disposed;
+
+  static readonly Stack arrays = new Stack();
 }
 #endregion
 
@@ -569,34 +593,35 @@ public struct Parameter
   
   public static void CheckParms(Parameter[] parms, out int numRequired, out int optionalStart, out int numOptional,
                                 out bool hasList, out bool hasDict)
-  { ArrayList names = new ArrayList();
-    bool os = false;
-    numRequired = optionalStart = numOptional = 0;
-    hasList = hasDict = false;
+  { using(CachedArray names=CachedArray.Alloc())
+    { bool os = false;
+      numRequired = optionalStart = numOptional = 0;
+      hasList = hasDict = false;
 
-    for(int i=0; i<parms.Length; i++)
-    { if(names.Contains(parms[i].Name.String))
-        throw new ArgumentException("duplicate parameter: "+parms[i].Name.String);
-      names.Add(parms[i].Name);
-      switch(parms[i].Type)
-      { case ParamType.Required:
-          if(os) throw new ArgumentException("required parameters must precede optional parameters");
-          numRequired++;
-          break;
-        case ParamType.Optional:
-          if(hasList || hasDict) throw new ArgumentException("list and dictionary arguments must come last");
-          if(os) numOptional++;
-          else { optionalStart=i; numOptional=1; os=true; }
-          break;
-        case ParamType.List:
-          if(hasDict) throw new ArgumentException("dictionary argument must come after list argument");
-          if(hasList) throw new ArgumentException("multiple list arguments are not allowed");
-          hasList = true;
-          break;
-        case ParamType.Dict:
-          if(hasDict) throw new ArgumentException("multiple list arguments are not allowed");
-          hasDict = true;
-          break;
+      for(int i=0; i<parms.Length; i++)
+      { if(names.Contains(parms[i].Name.String))
+          throw new ArgumentException("duplicate parameter: "+parms[i].Name.String);
+        names.Add(parms[i].Name);
+        switch(parms[i].Type)
+        { case ParamType.Required:
+            if(os) throw new ArgumentException("required parameters must precede optional parameters");
+            numRequired++;
+            break;
+          case ParamType.Optional:
+            if(hasList || hasDict) throw new ArgumentException("list and dictionary arguments must come last");
+            if(os) numOptional++;
+            else { optionalStart=i; numOptional=1; os=true; }
+            break;
+          case ParamType.List:
+            if(hasDict) throw new ArgumentException("dictionary argument must come after list argument");
+            if(hasList) throw new ArgumentException("multiple list arguments are not allowed");
+            hasList = true;
+            break;
+          case ParamType.Dict:
+            if(hasDict) throw new ArgumentException("multiple list arguments are not allowed");
+            hasDict = true;
+            break;
+        }
       }
     }
   }
@@ -637,8 +662,10 @@ public sealed class AST
 
   public static Node Create(Node body)
   { body.Preprocess();
-    body.Walk(new NodeDecorator(null));
-    return body;
+    using(NodeDecorator nd = new NodeDecorator(null))
+    { body.Walk(nd);
+      return body;
+    }
   }
 
   public static LambdaNode CreateCompiled(Node body)
@@ -646,8 +673,10 @@ public sealed class AST
     // top-level closures. it's unwrapped later on by SnippetMaker.Generate() et al
     LambdaNode ret = new LambdaNode(body);
     ret.Preprocess();
-    ret.Walk(new NodeDecorator(ret));
-    return ret;
+    using(NodeDecorator nd = new NodeDecorator(ret))
+    { ret.Walk(nd);
+      return ret;
+    }
   }
 
   #region NodeDecorator
@@ -665,12 +694,22 @@ public sealed class AST
        they need to use the Leave opcode, etc.
     10. Determines whether blocks have early exits (an exit that comes before the block's tail) or restarts.
     11. Calls node.Postprocess()
+    12. Finds all yield targets and assigns them to YieldNode.Targets
+    13. Finds all YieldNodes within ExceptionNodes and assigns them to ExceptionNode.Yields
   */
-  sealed class NodeDecorator : IWalker
+  sealed class NodeDecorator : IWalker, IDisposable
   { public NodeDecorator(LambdaNode top)
     { func = this.top = top;
-      if(top!=null) { bound=new ArrayList(); free=new ArrayList(); values=new ArrayList(); }
+      if(top!=null) { bound=CachedArray.Alloc(); free=CachedArray.Alloc(); values=CachedArray.Alloc(); }
       optimize = Options.Current.Optimize;
+    }
+
+    public void Dispose()
+    { if(bound!=null) bound.Dispose();
+      if(free!=null) free.Dispose();
+      if(values!=null) values.Dispose();
+      if(yields!=null) yields.Dispose();
+      bound = free = values = yields = null;
     }
 
     public bool Walk(Node node)
@@ -679,32 +718,47 @@ public sealed class AST
         throw Ops.SyntaxError(node, "An interrupt node is not valid within a try block.");
 
       if(node is CallNode) ((CallNode)node).InFunc = func;
-      else if(node is LambdaNode)
-      { foreach(Parameter p in func.Parameters) if(p.Default!=null) p.Default.Walk(this);
-
-        LambdaNode oldFunc = func;
+      else if(node is LambdaNode || node is GeneratorNode)
+      { GeneratorNode oldGen = gen;
         ExceptionNode oldTry = inTry;
-        bool oldCatch  = inCatch;
-        func    = (LambdaNode)node;
+        LambdaNode oldFunc = func;
+        bool oldCatch = inCatch;
+
+        func    = node as LambdaNode;
+        gen     = node as GeneratorNode;
         inTry   = null;
         inCatch = false;
 
-        if(top==null) func.Body.Walk(this); // we don't need to resolve names in evaluated code
+        if(func==null) func = top;
+        else foreach(Parameter p in func.Parameters) if(p.Default!=null) p.Default.Walk(this);
+
+        if(top==null) // we don't need to resolve names in interpreted code
+        { if(gen==null) func.Body.Walk(this);
+          else gen.Body.Walk(this);
+        }
         else
-        { int oldFree=freeStart, oldBound=boundStart, oldBlock=blockStart;
-          ArrayList oldClosedParams=closedParams, oldClosedVars=closedVars;
+        { int oldFree=freeStart, oldBound=boundStart, oldBlock=blockStart, oldYield=yieldStart;
+          CachedArray oldClosedParams=closedParams, oldClosedVars=closedVars;
 
           freeStart  = free.Count;
           boundStart = bound.Count;
           blockStart = blocks==null ? 0 : blocks.Count;
-          closedVars = new ArrayList(); closedParams = new ArrayList();
+          yieldStart = yields==null ? 0 : yields.Count;
+          closedVars = CachedArray.Alloc(); closedParams = CachedArray.Alloc();
 
-          foreach(Parameter parm in func.Parameters)
-          { bound.Add(parm.Name);
-            values.Add(null);
+          if(gen==null)
+            foreach(Parameter parm in func.Parameters)
+            { bound.Add(parm.Name);
+              values.Add(null);
+            }
+
+          if(gen==null) func.Body.Walk(this);
+          else
+          { if(yields==null) yields = CachedArray.Alloc();
+            gen.Body.Walk(this);
+            gen.Yields = new YieldNode[yields.Count-yieldStart];
+            yields.CopyTo(yieldStart, gen.Yields, 0, gen.Yields.Length);
           }
-
-          func.Body.Walk(this);
 
           // if there are free variables in this function, try to resolve them
           for(int i=freeStart; i<free.Count; i++)
@@ -744,7 +798,7 @@ public sealed class AST
             }
           }
 
-          if(func.ClosedParams!=0)
+          if(gen==null && func.ClosedParams!=0)
           { // if the function closes parameters but not variables, the parameter indices will be wrong. fix them.
             if(func.ClosedVars==0)
             { for(int i=0; i<func.Parameters.Length; i++) func.Parameters[i].Name.Index = i;
@@ -760,42 +814,47 @@ public sealed class AST
           bound.RemoveRange(boundStart, bound.Count-boundStart);
           free.RemoveRange(freeStart, free.Count-freeStart);
           if(blocks!=null) blocks.RemoveRange(blockStart, blocks.Count-blockStart);
-          boundStart=oldBound; freeStart=oldFree; blockStart=oldBlock;
-          closedParams=oldClosedParams; closedVars=oldClosedVars;
+          if(yields!=null) yields.RemoveRange(yieldStart, yields.Count-yieldStart);
+          boundStart=oldBound; freeStart=oldFree; blockStart=oldBlock; yieldStart=oldYield;
+          closedParams.Dispose(); closedVars.Dispose(); closedParams=oldClosedParams; closedVars=oldClosedVars;
         }
-        func=oldFunc; inTry=oldTry; inCatch=oldCatch;
+        func=oldFunc; inTry=oldTry; inCatch=oldCatch; gen=oldGen;
         return false;
       }
       else if(!inCatch && node is ThrowNode && ((ThrowNode)node).Exception==null)
         throw Ops.SyntaxError(node, "bare throw form is only allowed within a catch statement");
       else if(node is ExceptionNode)
-      { if(tryBlocks==null) tryBlocks = new Stack();
-        tryBlocks.Push(inTry);
+      { ExceptionNode oldTry = inTry;
         inTry = (ExceptionNode)node;
 
-        if(node is TryNode)
-        { TryNode tn=(TryNode)node;
-          tn.Body.Walk(this);
-
-          if(tn.Excepts!=null)
-            foreach(Except ex in tn.Excepts)
-            { if(ex.Types!=null) foreach(Node n in ex.Types) n.Walk(this);
-              if(ex.Var!=null)
-              { bound.Add(ex.Var);
-                values.Add(null);
-              }
-              inCatch = true;
-              ex.Body.Walk(this);
-              inCatch = false;
-              if(ex.Var!=null)
-              { bound.RemoveAt(bound.Count-1);
-                values.RemoveAt(values.Count-1);
-              }
-            }
-
-          if(tn.Finally!=null) tn.Finally.Walk(this);
-          return false;
+        int yieldStart = yields==null ? 0 : yields.Count;
+        inTry.Body.Walk(this);
+        if(yields!=null && yields.Count!=yieldStart)
+        { inTry.Yields = new YieldNode[yields.Count-yieldStart];
+          yields.CopyTo(yieldStart, inTry.Yields, 0, yields.Count-yieldStart);
         }
+
+        if(inTry.Excepts!=null)
+          foreach(Except ex in inTry.Excepts)
+          { if(ex.Types!=null) foreach(Node n in ex.Types) n.Walk(this);
+            if(ex.Var!=null)
+            { bound.Add(ex.Var);
+              values.Add(null);
+            }
+            inCatch = true;
+            ex.Body.Walk(this);
+            inCatch = false;
+            if(ex.Var!=null)
+            { bound.RemoveAt(bound.Count-1);
+              values.RemoveAt(values.Count-1);
+            }
+          }
+
+        inTry.WalkFinally(this);
+        inTry = oldTry;
+        inTry.WalkElse(this);
+
+        return false;
       }
       else if(top!=null) // compiled code only
       { if(node is VariableNode) HandleLocalReference(ref ((VariableNode)node).Name);
@@ -857,17 +916,29 @@ public sealed class AST
         }
         else if(node is BlockNode)
         { BlockNode bn = (BlockNode)node;
-          if(blocks==null) blocks = new ArrayList();
+          if(blocks==null) blocks = CachedArray.Alloc();
           bn.Parent = blocks.Count==blockStart ? null : (BlockNode)blocks[blocks.Count-1];
           blocks.Add(bn);
+        }
+        else if(node is YieldNode)
+        { if(gen==null) throw Ops.SyntaxError(node, "yield clauses disallowed outside generators");
+          YieldNode yn = (YieldNode)node;
+          yn.YieldNumber = (uint)yields.Add(yn);
+          
+          int numTries = 0;
+          ExceptionNode ex = inTry;
+          while(ex!=null) { numTries++; ex=ex.InTry; }
+          
+          yn.Targets = new YieldNode.Target[numTries+1];
+          ex = inTry;
+          for(int i=0; i<numTries; ex=ex.InTry,i++) yn.Targets[i].ExceptNode = ex;
         }
       }
       return true;
     }
 
     public void PostWalk(Node node)
-    { if(node is ExceptionNode) inTry = (ExceptionNode)tryBlocks.Pop();
-      if(top==null) return;
+    { if(top==null) return;
 
       if(node is LocalBindNode)
       { LocalBindNode let = (LocalBindNode)node;
@@ -927,7 +998,7 @@ public sealed class AST
     bool HandleLocalReference(ref Name name, Node assign, bool useAssign)
     { int index = IndexOf(name.String, bound);
       if(index==-1)
-      { if(func==top) name.Depth = Scripting.Name.Global;
+      { if(func==top && gen==null) name.Depth = Scripting.Name.Global;
         else
         { index = IndexOf(name.String, free);
           if(index==-1) { free.Add(name); name.Depth=1; }
@@ -966,11 +1037,11 @@ public sealed class AST
     #endregion
 
     LambdaNode func, top;
+    GeneratorNode gen;
     ExceptionNode inTry;
     Hashtable memberNodes;
-    ArrayList blocks, bound, free, values, closedVars, closedParams;
-    Stack tryBlocks;
-    int boundStart, freeStart, blockStart;
+    CachedArray blocks, bound, free, values, closedVars, closedParams, yields;
+    int boundStart, freeStart, blockStart, yieldStart;
     OptimizeType optimize;
     bool inCatch;
 
@@ -1040,7 +1111,7 @@ public abstract class Node
   public virtual object Evaluate() { throw new NotSupportedException(); }
   public string GenerateName(string baseName) { return Options.Current.Language.GenerateName(this, baseName); }
   public virtual Type GetNodeType() { return typeof(object); }
-  public virtual void MarkTail(bool tail) { Tail=tail; }
+  public virtual void MarkTail(bool tail) { Tail = tail; }
   public virtual void Optimize() { }
   public void Preprocess() { MarkTail(true); }
   public virtual void SetFlags() { }
@@ -1097,7 +1168,7 @@ public abstract class Node
     return false;
   }
 
-  public static bool HasTryNode(params Node[] nodes)
+  public static bool HasExcept(params Node[] nodes)
   { if(nodes!=null) foreach(Node n in nodes) if(n!=null && n.ClearsStack) return true;
     return false;
   }
@@ -1152,7 +1223,14 @@ public abstract class Node
 
   protected void TailReturn(CodeGenerator cg)
   { if(Tail)
-    { if(InTry==null) cg.EmitReturn();
+    { if(cg.IsGenerator)
+      { if(InTry==null)
+        { cg.EmitBool(false);
+          cg.EmitReturn();
+        }
+        else throw new NotImplementedException(); // FIXNOW: handle returning from a try block
+      }
+      else if(InTry==null) cg.EmitReturn();
       else
       { InTry.ReturnSlot.EmitSet(cg);
         cg.ILG.Emit(OpCodes.Leave, InTry.LeaveLabel);
@@ -1330,7 +1408,7 @@ public sealed class BodyNode : Node
   }
 
   public override void SetFlags()
-  { ClearsStack = HasTryNode(Forms);
+  { ClearsStack = HasExcept(Forms);
     Interrupts  = HasInterrupt(Forms);
   }
 
@@ -1344,7 +1422,7 @@ public sealed class BodyNode : Node
 #endregion
 
 #region BreakNode
-public sealed class BreakNode : JumpNode
+public class BreakNode : JumpNode
 { public BreakNode(string name) : base(name) { }
   public BreakNode(string name, Node returnValue) : base(name) { Return = returnValue; }
 
@@ -1365,6 +1443,11 @@ public sealed class BreakNode : JumpNode
   }
 
   public override object Evaluate() { throw new BreakException(Name); }
+
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    if(Return!=null) Return.MarkTail(false);
+  }
 
   public override void Walk(IWalker w)
   { if(w.Walk(this) && Return!=null) Return.Walk(w);
@@ -1839,9 +1922,10 @@ public class DeleteNode : SetNodeBase
   }
 
   public override MutatedName[] GetMutatedNames()
-  { ArrayList names = new ArrayList();
-    foreach(Node n in Nodes) GetMutatedNames(names, n);
-    return (MutatedName[])names.ToArray(typeof(MutatedName));
+  { using(CachedArray names = CachedArray.Alloc())
+    { foreach(Node n in Nodes) GetMutatedNames(names, n);
+      return (MutatedName[])names.ToArray(typeof(MutatedName));
+    }
   }
 
   public override Type GetNodeType() { return typeof(void); }
@@ -1904,13 +1988,14 @@ public abstract class ExceptionNode : Node
   public Slot  ReturnSlot { get { return InTry==null ? returnSlot : InTry.ReturnSlot; } }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(!ClearsStack)
+  { if(!ClearsStack) // if we don't really need to clear the stack, don't.
     { if(!NeedElse) // either NeedElse is true or NeedFinally, but not both
       { if(NeedFinally) EmitFinally(cg);
         EmitConstant(cg, Body.Evaluate(), ref etype);
       }
       else
-      { EmitElse(cg);
+      { if(NeedFinally) throw new InvalidOperationException("NeedElse and NeedFinally cannot both be true");
+        EmitElse(cg);
         EmitConstant(cg, Body.Evaluate(), ref etype);
       }
       return;
@@ -1930,8 +2015,40 @@ public abstract class ExceptionNode : Node
       fromElse.EmitSet(cg);
     }
 
-    EmitPreTry(cg);
-    leaveLabel = cg.ILG.BeginExceptionBlock();
+    EmitPreTry(cg); // TODO: should there be any special handling with PreTry and the presence of Yields? (should PreTry be re-executed when re-entering the try block?)
+
+    if(Yields==null) leaveLabel = cg.ILG.BeginExceptionBlock();
+    else
+    { Label tryStart = cg.ILG.DefineLabel();
+
+      cg.EmitInt(unchecked((int)uint.MaxValue));
+      Slot choice = cg.AllocLocalTemp(typeof(int));
+      choice.EmitSet(cg);
+      cg.ILG.Emit(OpCodes.Br_S, tryStart);
+
+      for(int i=0; i<Yields.Length; i++)
+        foreach(YieldNode.Target yt in Yields[i].Targets)
+          if(yt.ExceptNode==this)
+          { cg.ILG.MarkLabel(yt.Label);
+            cg.EmitInt(i);
+            choice.EmitSet(cg);
+            if(i!=Yields.Length-1) cg.ILG.Emit(OpCodes.Br, tryStart);
+            break;
+          }
+
+      cg.ILG.MarkLabel(tryStart);
+      leaveLabel = cg.ILG.BeginExceptionBlock();
+      Label[] jumps = new Label[Yields.Length];
+      for(int i=0; i<Yields.Length; i++)
+      { YieldNode yn = Yields[i];
+        for(int j=0; j<yn.Targets.Length; j++)
+          if(yn.Targets[j].ExceptNode==this) { jumps[i] = yn.Targets[j+1].Label; break; }
+      }
+
+      choice.EmitGet(cg);
+      cg.FreeLocalTemp(choice);
+      cg.ILG.Emit(OpCodes.Switch, jumps);
+    }
 
     if(returnSlot==null)
     { Body.Emit(cg, ref etype);
@@ -2101,6 +2218,17 @@ public abstract class ExceptionNode : Node
       }
   }
 
+  public override void Postprocess()
+  { if(Yields!=null && NeedFinally)
+      throw Ops.SyntaxError(this, "finally clauses not allowed on a exceptions blocks that contain yields");
+
+    if(Excepts!=null)
+      foreach(Except ex in Excepts)
+        if(HasYield.Check(ex.Body)) 
+          throw Ops.SyntaxError(this, "yield clauses cannot appear within exception handlers, finally clauses, or "+
+                                      "else clauses");
+  }
+
   public override void SetFlags()
   { ClearsStack = !Body.IsConstant && (!NeedFinally || !NeedElse);
     Interrupts  = Body.Interrupts;
@@ -2111,10 +2239,36 @@ public abstract class ExceptionNode : Node
     w.PostWalk(this);
   }
 
+  public virtual void WalkElse(IWalker w) { }
+  public virtual void WalkFinally(IWalker w) { }
+
   public readonly Node Body;
   public readonly Except[] Excepts;
+  public YieldNode[] Yields;
 
   [ThreadStatic] public static Stack ExceptionStack;
+
+  #region HasYield
+  protected class HasYield : IWalker
+  { HasYield() { }
+
+    public static bool Check(Node node)
+    { HasYield w = new HasYield();
+      node.Walk(w);
+      return w.found;
+    }
+
+    public void PostWalk(Node node) { }
+
+    public bool Walk(Node node)
+    { if(node is LambdaNode) return false;
+      else if(node is YieldNode) found = true;
+      return !found;
+    }
+
+    bool found;
+  }
+  #endregion
 
   protected virtual void EmitPreTry(CodeGenerator cg) { }
   protected virtual void EmitBody(CodeGenerator cg) { Body.Emit(cg); }
@@ -2138,6 +2292,67 @@ public abstract class ExceptionNode : Node
 
   Label leaveLabel;
   Slot returnSlot;
+}
+#endregion
+
+#region GeneratorNode
+public sealed class GeneratorNode : Node
+{ public GeneratorNode(Node body) { Body = body; }
+
+  public override void Emit(CodeGenerator cg, ref Type etype)
+  { if(etype!=typeof(void))
+    { cg.EmitArgGet(0); // get local environment
+      cg.EmitNew(MakeGenerator(cg));
+      etype = typeof(Generator);
+    }
+    TailReturn(cg);
+  }
+
+  public override object Evaluate()
+  { throw new NotImplementedException(); // FIXME: figure out how to implement interpreted generators
+  }
+
+  public override Type GetNodeType() { return typeof(Generator); }
+
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    Body.MarkTail(true);
+  }
+
+  public override void Walk(IWalker w) // this should be kept in sync with AST.NodeDecorator
+  { if(w.Walk(this)) Body.Walk(w);
+    w.PostWalk(this);
+  }
+
+  public Node Body;
+  public YieldNode[] Yields;
+  
+  ConstructorInfo MakeGenerator(CodeGenerator cg)
+  { TypeGenerator tg = cg.TypeGenerator.DefineNestedType(TypeAttributes.Sealed, "generator$"+index.Next,
+                                                         typeof(Generator));
+    CodeGenerator ncg = tg.DefineMethodOverride("InnerNext");
+    ncg.IsGenerator = true;
+    ncg.Namespace = new FieldNamespace(cg.Namespace, "_", ncg, new ThisSlot(tg.TypeBuilder));
+
+    foreach(YieldNode yn in Yields)
+      for(int i=0; i<yn.Targets.Length; i++) yn.Targets[i].Label = ncg.ILG.DefineLabel();
+
+    Label[] jumps = new Label[Yields.Length];
+    for(int i=0; i<Yields.Length; i++) jumps[i] = Yields[i].Targets[0].Label;
+    ncg.EmitThis();
+    ncg.EmitFieldGet(typeof(Generator).GetField("jump", BindingFlags.Instance|BindingFlags.NonPublic));
+    ncg.ILG.Emit(OpCodes.Switch, jumps);
+
+    Body.EmitVoid(ncg);
+    ncg.Finish();
+
+    ncg = tg.DefineChainedConstructor(typeof(LocalEnvironment));
+    ncg.EmitReturn();
+    ncg.Finish();
+    return (ConstructorInfo)ncg.MethodBase;
+  }
+
+  static Index index = new Index();
 }
 #endregion
 
@@ -2268,7 +2483,7 @@ public sealed class IfNode : Node
       }
     }
     else
-    { ClearsStack = HasTryNode(Test, IfTrue, IfFalse);
+    { ClearsStack = HasExcept(Test, IfTrue, IfFalse);
       Interrupts  = HasInterrupt(Test, IfTrue, IfFalse);
     }
   }
@@ -2525,7 +2740,8 @@ public sealed class LocalBindNode : Node
   { Inits=inits; Body=body;
 
     Names = new Name[names.Length];
-    for(int i=0; i<names.Length; i++) Names[i] = new Name(names[i], types==null ? typeof(object) : types[i]);
+    for(int i=0; i<names.Length; i++)
+      Names[i] = new Name(names[i], types==null || types[i]==null ? typeof(object) : types[i]);
   }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
@@ -2567,7 +2783,7 @@ public sealed class LocalBindNode : Node
   }
 
   public override void SetFlags()
-  { ClearsStack = Body.ClearsStack || HasTryNode(Inits);
+  { ClearsStack = Body.ClearsStack || HasExcept(Inits);
     Interrupts  = Body.Interrupts  || HasInterrupt(Inits);
   }
 
@@ -2783,7 +2999,7 @@ public sealed class OpNode : Node
   public override void Optimize() { IsConstant = AreConstant(Nodes); }
 
   public override void SetFlags()
-  { ClearsStack = HasTryNode(Nodes);
+  { ClearsStack = HasExcept(Nodes);
     Interrupts  = HasInterrupt(Nodes);
   }
 
@@ -2876,9 +3092,10 @@ public class SetNode : SetNodeBase
   }
 
   public override MutatedName[] GetMutatedNames()
-  { ArrayList names = new ArrayList();
-    foreach(Node n in LHS) GetMutatedNames(names, n);
-    return (MutatedName[])names.ToArray(typeof(MutatedName));
+  { using(CachedArray names = CachedArray.Alloc())
+    { foreach(Node n in LHS) GetMutatedNames(names, n);
+      return (MutatedName[])names.ToArray(typeof(MutatedName));
+    }
   }
 
   public override Type GetNodeType()
@@ -3010,7 +3227,7 @@ public sealed class ThrowNode : Node
     else
     { Exception.Emit(cg);
       if(Objects==null || Objects.Length==0) cg.EmitNull();
-      else if(!HasTryNode(Objects)) cg.EmitObjectArray(Objects);
+      else if(!HasExcept(Objects)) cg.EmitObjectArray(Objects);
       else
       { bool keepAround = HasInterrupt(Objects);
         Slot tmp = cg.AllocLocalTemp(typeof(object), keepAround);
@@ -3115,6 +3332,21 @@ public sealed class TryNode : ExceptionNode
 
   public readonly Node Else, Finally;
   
+  public override void Postprocess()
+  { base.Postprocess();
+    if(Else!=null && HasYield.Check(Else) || Finally!=null && HasYield.Check(Finally))
+      throw Ops.SyntaxError(this, "yield clauses cannot appear within exception handlers, finally clauses, or "+
+                                  "else clauses");
+  }
+
+  public override void WalkElse(IWalker w)
+  { if(Else!=null) Else.Walk(w);
+  }
+
+  public override void WalkFinally(IWalker w)
+  { if(Finally!=null) Finally.Walk(w);
+  }
+
   protected override void EmitElse(CodeGenerator cg) { Else.EmitVoid(cg); }
   protected override void EmitFinally(CodeGenerator cg) { Finally.EmitVoid(cg); }
 
@@ -3285,7 +3517,7 @@ public sealed class ValueBindNode : Node
   }
 
   public override void SetFlags()
-  { ClearsStack = Body.ClearsStack || HasTryNode(Inits);
+  { ClearsStack = Body.ClearsStack || HasExcept(Inits);
     Interrupts  = Body.Interrupts || HasInterrupt(Inits);
   }
 
@@ -3327,7 +3559,7 @@ public sealed class ValuesNode : Node
 
   public override void SetFlags()
   { if(!IsConstant)
-    { ClearsStack = HasTryNode(Values);
+    { ClearsStack = HasExcept(Values);
       Interrupts  = HasInterrupt(Values);
     }
   }
@@ -3416,7 +3648,7 @@ public sealed class VectorNode : Node
   }
 
   public override void SetFlags()
-  { ClearsStack = HasTryNode(Items);
+  { ClearsStack = HasExcept(Items);
     Interrupts  = HasInterrupt(Items);
   }
 
@@ -3451,6 +3683,67 @@ public class WrapperNode : Node
   }
 
   public Node Node;
+}
+#endregion
+
+#region YieldNode
+public sealed class YieldNode : Node
+{ public YieldNode(Node value) { Value = value; }
+
+  // either holds an ExceptionNode and a label just before the ExceptionNode, or just the label to return to
+  public struct Target
+  { public ExceptionNode ExceptNode;
+    public Label Label;
+  }
+
+  public override void Emit(CodeGenerator cg, ref Type etype)
+  { // this code assumes it's being emitted inside a Generator
+    cg.EmitThis();
+    cg.EmitInt(unchecked((int)YieldNumber));
+    cg.EmitFieldSet(typeof(Generator).GetField("jump", BindingFlags.Instance|BindingFlags.NonPublic));
+
+    if(!Value.ClearsStack)
+    { cg.EmitThis();
+      Value.Emit(cg);
+    }
+    else
+    { Value.Emit(cg);
+      Slot tmp = cg.AllocLocalTemp(typeof(object));
+      tmp.EmitSet(cg);
+      cg.EmitThis();
+      tmp.EmitGet(cg);
+      cg.FreeLocalTemp(tmp);
+    }
+    cg.EmitFieldSet(typeof(Generator).GetField("current", BindingFlags.Instance|BindingFlags.NonPublic));
+
+    cg.EmitBool(true);
+    cg.EmitReturn();
+    cg.ILG.MarkLabel(Targets[Targets.Length-1].Label);
+    TailReturn(cg);
+    etype = typeof(void);
+  }
+
+  public override object Evaluate() { throw new NotImplementedException(); } // TODO: figure out how to implement this
+  public override Type GetNodeType() { return typeof(void); }
+
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    Value.MarkTail(false);
+  }
+
+  public override void SetFlags()
+  { ClearsStack = Value.ClearsStack;
+    Interrupts  = true;
+  }
+
+  public override void Walk(IWalker w)
+  { if(w.Walk(this)) Value.Walk(w);
+    w.PostWalk(this);
+  }
+
+  public Target[] Targets;
+  public Node Value;
+  public uint YieldNumber;
 }
 #endregion
 

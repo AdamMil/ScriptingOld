@@ -34,6 +34,7 @@ public sealed class TypeGenerator
   }
 
   public Type BaseType { get { return TypeBuilder.BaseType; } }
+  public bool IsSealed { get { return (TypeBuilder.Attributes&TypeAttributes.Sealed)!=0; } }
 
   public CodeGenerator DefineConstructor(params Type[] types) { return DefineConstructor(MethodAttributes.Public, types); }
   public CodeGenerator DefineConstructor(MethodAttributes attrs, params Type[] types)
@@ -42,7 +43,10 @@ public sealed class TypeGenerator
   }
 
   public CodeGenerator DefineChainedConstructor(params Type[] paramTypes)
-  { return DefineChainedConstructor(TypeBuilder.BaseType.GetConstructor(paramTypes));
+  { ConstructorInfo ci = TypeBuilder.BaseType.GetConstructor(BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic,
+                                                             null, paramTypes, null);
+    if(ci.IsPrivate) ci = null;
+    return DefineChainedConstructor(ci);
   }
   public CodeGenerator DefineChainedConstructor(ConstructorInfo parent)
   { ParameterInfo[] pi = parent.GetParameters();
@@ -82,18 +86,22 @@ public sealed class TypeGenerator
   }
 
   public CodeGenerator DefineMethodOverride(string name)
-  { return DefineMethodOverride(TypeBuilder.BaseType, name, false);
+  { return DefineMethodOverride(TypeBuilder.BaseType, name, IsSealed);
   }
   public CodeGenerator DefineMethodOverride(string name, bool final)
   { return DefineMethodOverride(TypeBuilder.BaseType.GetMethod(name, BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public),
                                 final);
   }
-  public CodeGenerator DefineMethodOverride(Type type, string name) { return DefineMethodOverride(type, name, false); }
+  public CodeGenerator DefineMethodOverride(Type type, string name)
+  { return DefineMethodOverride(type, name, IsSealed);
+  }
   public CodeGenerator DefineMethodOverride(Type type, string name, bool final)
   { return DefineMethodOverride(type.GetMethod(name, BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public),
                                 final);
   }
-  public CodeGenerator DefineMethodOverride(MethodInfo baseMethod) { return DefineMethodOverride(baseMethod, false); }
+  public CodeGenerator DefineMethodOverride(MethodInfo baseMethod)
+  { return DefineMethodOverride(baseMethod, IsSealed);
+  }
   public CodeGenerator DefineMethodOverride(MethodInfo baseMethod, bool final)
   { MethodAttributes attrs = baseMethod.Attributes & ~(MethodAttributes.Abstract|MethodAttributes.NewSlot) |
                              MethodAttributes.HideBySig;
@@ -107,7 +115,7 @@ public sealed class TypeGenerator
 
   public TypeGenerator DefineNestedType(string name, Type parent) { return DefineNestedType(0, name, parent); }
   public TypeGenerator DefineNestedType(TypeAttributes attrs, string name, Type parent)
-  { if(nestedTypes==null) nestedTypes = new ArrayList();
+  { if(nestedTypes==null) nestedTypes = CachedArray.Alloc();
     TypeAttributes ta = attrs | TypeAttributes.Class | TypeAttributes.NestedPublic;
     TypeGenerator ret = new TypeGenerator(Assembly, TypeBuilder.DefineNestedType(name, ta, parent));
     nestedTypes.Add(ret);
@@ -150,38 +158,38 @@ public sealed class TypeGenerator
   }
 
   public CodeGenerator DefinePropertyOverride(string name)
-  { return DefinePropertyOverride(TypeBuilder.BaseType, name, false);
+  { return DefinePropertyOverride(TypeBuilder.BaseType, name, IsSealed);
   }
   public CodeGenerator DefinePropertyOverride(string name, bool final)
   { return DefinePropertyOverride(TypeBuilder.BaseType, name, final);
   }
   public CodeGenerator DefinePropertyOverride(Type type, string name)
-  { return DefinePropertyOverride(type.GetProperty(name), false);
+  { return DefinePropertyOverride(type.GetProperty(name), IsSealed);
   }
   public CodeGenerator DefinePropertyOverride(Type type, string name, bool final)
   { return DefinePropertyOverride(type.GetProperty(name), final);
   }
   public CodeGenerator DefinePropertyOverride(PropertyInfo baseProp)
-  { return DefinePropertyOverride(baseProp, true);
+  { return DefinePropertyOverride(baseProp, IsSealed);
   }
   public CodeGenerator DefinePropertyOverride(PropertyInfo baseProp, bool final)
   { return DefineMethodOverride(baseProp.CanRead ? baseProp.GetGetMethod() : baseProp.GetSetMethod(), final);
   }
 
   public void DefinePropertyOverride(string name, out CodeGenerator get, out CodeGenerator set)
-  { DefinePropertyOverride(TypeBuilder.BaseType, name, false, out get, out set);
+  { DefinePropertyOverride(TypeBuilder.BaseType, name, IsSealed, out get, out set);
   }
   public void DefinePropertyOverride(string name, bool final, out CodeGenerator get, out CodeGenerator set)
   { DefinePropertyOverride(TypeBuilder.BaseType, name, final, out get, out set);
   }
   public void DefinePropertyOverride(Type type, string name, out CodeGenerator get, out CodeGenerator set)
-  { DefinePropertyOverride(type.GetProperty(name), false, out get, out set);
+  { DefinePropertyOverride(type.GetProperty(name), IsSealed, out get, out set);
   }
   public void DefinePropertyOverride(Type type, string name, bool final, out CodeGenerator get, out CodeGenerator set)
   { DefinePropertyOverride(type.GetProperty(name), final, out get, out set);
   }
   public void DefinePropertyOverride(PropertyInfo baseProp, out CodeGenerator get, out CodeGenerator set)
-  { DefinePropertyOverride(baseProp, false, out get, out set);
+  { DefinePropertyOverride(baseProp, IsSealed, out get, out set);
   }
   public void DefinePropertyOverride(PropertyInfo baseProp, bool final, out CodeGenerator get, out CodeGenerator set)
   { get = baseProp.CanRead  ? DefineMethodOverride(baseProp.GetGetMethod(), final) : null;
@@ -208,7 +216,14 @@ public sealed class TypeGenerator
       initGen.Finish();
     }
     Type ret = TypeBuilder.CreateType();
-    if(nestedTypes!=null) foreach(TypeGenerator tg in nestedTypes) tg.FinishType();
+    if(nestedTypes!=null)
+    { foreach(TypeGenerator tg in nestedTypes) tg.FinishType();
+      nestedTypes.Dispose();
+    }
+    if(constobjs!=null) constobjs.Dispose();
+    if(constslots!=null) constslots.Dispose();
+    nestedTypes = constobjs = constslots = null;
+
     return ret;
   }
 
@@ -229,7 +244,7 @@ public sealed class TypeGenerator
 
     if(hash) slot = (Slot)constants[value];
     else
-    { if(constobjs==null) { constobjs = new ArrayList(); constslots = new ArrayList(); }
+    { if(constobjs==null) { constobjs = CachedArray.Alloc(); constslots = CachedArray.Alloc(); }
       else
       { int index=-1;
         if(value is string[])
@@ -336,7 +351,7 @@ public sealed class TypeGenerator
   }
 
   HybridDictionary constants=new HybridDictionary(), namedConstants=new HybridDictionary();
-  ArrayList nestedTypes, constobjs, constslots;
+  CachedArray nestedTypes, constobjs, constslots;
   CodeGenerator initGen;
   int numConstants;
 }

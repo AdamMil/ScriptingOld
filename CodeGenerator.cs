@@ -36,19 +36,20 @@ public class CodeGenerator
 
   public Slot AllocLocalTemp(Type type) { return AllocLocalTemp(type, false); }
   public Slot AllocLocalTemp(Type type, bool keepAround)
-  { if(keepAround && IsInterruptible) return Namespace.AllocTemp(type);
+  { CachedArray array = keepAround && IsGenerator ? nsTemps : localTemps;
 
-    if(localTemps==null) localTemps = new ArrayList();
-
-    Slot ret;
-    for(int i=localTemps.Count-1; i>=0; i--)
-    { ret = (Slot)localTemps[i];
-      if(ret.Type==type)
-      { localTemps.RemoveAt(i);
-        return ret;
+    if(array!=null)
+    { Slot slot;
+      for(int i=0; i<array.Count; i++)
+      { slot = (Slot)array[i];
+        if(slot.Type==type)
+        { array.RemoveAt(i);
+          return slot;
+        }
       }
     }
-    return new LocalSlot(ILG.DeclareLocal(type));
+
+    return keepAround && IsGenerator ? Namespace.AllocTemp(type) : new LocalSlot(ILG.DeclareLocal(type));
   }
 
   public Slot AllocObjectArray(Node[] exprs) { return EmitObjectArray(exprs, 0, exprs.Length, true); }
@@ -453,7 +454,7 @@ public class CodeGenerator
     ILG.Emit(OpCodes.Ret);
   }
 
-  public void EmitString(string value)
+  public void EmitString(string value) // TODO: make sure this is storing strings in a string table
   { if(value==null) ILG.Emit(OpCodes.Ldnull);
     else ILG.Emit(OpCodes.Ldstr, value);
   }
@@ -507,14 +508,23 @@ public class CodeGenerator
     else ILG.Emit(OpCodes.Ldc_I4_0);
   }
 
-  public void Finish() { if(localTemps!=null) localTemps.Clear(); }
+  public void Finish()
+  { if(localTemps!=null) { localTemps.Dispose(); localTemps=null; }
+    if(nsTemps!=null) { nsTemps.Dispose(); nsTemps=null; }
+  }
 
   // TODO: go through the calls to this method and check whether the ones that are excluded due to an interrupt
   //       really need to be excluded
   public void FreeLocalTemp(Slot slot)
   { if(slot==null) throw new ArgumentException("Attempted to free a null temp slot.");
-    if(slot is LocalSlot) localTemps.Add(slot);
-    else Namespace.FreeTemp(slot);
+    if(slot is LocalSlot)
+    { if(localTemps==null) localTemps = CachedArray.Alloc();
+      localTemps.Add(slot);
+    }
+    else
+    { if(nsTemps==null) nsTemps = CachedArray.Alloc();
+      nsTemps.Add(slot);
+    }
   }
 
   public void MarkPosition(Node node)
@@ -608,7 +618,7 @@ public class CodeGenerator
   }
 
   public Namespace Namespace;
-  public bool IsInterruptible;
+  public bool IsGenerator;
 
   public readonly TypeGenerator TypeGenerator;
   public readonly MethodBase MethodBase;
@@ -629,7 +639,7 @@ public class CodeGenerator
     throw new NotSupportedException(type.FullName);
   }
 
-  ArrayList localTemps;
+  CachedArray localTemps, nsTemps;
 }
 
 } // namespace Scripting

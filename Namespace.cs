@@ -53,10 +53,6 @@ public abstract class Namespace
     }
   }
 
-  public virtual void FreeTemp(Slot slot)
-  { throw new NotSupportedException("This namespace does not support temporaries.");
-  }
-
   public Slot GetSlot(Name name) { return GetSlot(name, true); }
   public Slot GetSlot(Name name, bool makeIt)
   { if(name.Depth==Name.Global && Parent!=null) return Parent.GetSlot(name, true);
@@ -64,8 +60,7 @@ public abstract class Namespace
     if(ret==null)
     { if(Parent!=null) ret = Parent.GetSlot(name, false);
       // TODO: develop a way to communicate to this method whether or not this variable needs to be kept around
-      if(ret==null && makeIt)
-        slots[name] = ret = name.Depth==Name.Local ? codeGen.AllocLocalTemp(name.Type, true) : MakeSlot(name);
+      if(ret==null && makeIt) slots[name] = ret = MakeSlot(name);
     }
     return ret;
   }
@@ -87,10 +82,34 @@ public abstract class Namespace
     }
   }
 
-  protected abstract Slot MakeSlot(Name name);
+  protected virtual Slot MakeSlot(Name name)
+  { if(name.Depth==Name.Local) return codeGen.AllocLocalTemp(name.Type, true);
+    throw new NotImplementedException("unhandled name depth");
+  }
 
   protected HybridDictionary slots = new HybridDictionary();
   protected CodeGenerator codeGen;
+}
+#endregion
+
+#region FieldNamespace
+public sealed class FieldNamespace : Namespace
+{ public FieldNamespace(Namespace parent, string prefix, CodeGenerator cg) : base(parent, cg) { Prefix = prefix; }
+  public FieldNamespace(Namespace parent, string prefix, CodeGenerator cg, Slot instance)
+    : base(parent, cg) { Prefix=prefix; Instance=instance; }
+
+  public override Slot AllocTemp(Type type)
+  { return codeGen.TypeGenerator.DefineField(Prefix+"var$"+index.Next, type);
+  }
+
+  public readonly string Prefix;
+  public readonly Slot Instance;
+
+  protected override Slot MakeSlot(Name name)
+  { return name.Depth==Name.Local ? base.MakeSlot(name) : new EnvironmentSlot(name);
+  }
+
+  static Index index = new Index();
 }
 #endregion
 
@@ -98,7 +117,9 @@ public abstract class Namespace
 public sealed class LocalNamespace : Namespace
 { public LocalNamespace(Namespace parent, CodeGenerator cg) : base(parent, cg) { }
 
-  protected override Slot MakeSlot(Name name) { return new EnvironmentSlot(name); }
+  protected override Slot MakeSlot(Name name)
+  { return name.Depth==Name.Local ? base.MakeSlot(name) : new EnvironmentSlot(name);
+  }
 }
 #endregion
 
@@ -122,7 +143,8 @@ public sealed class TopLevelNamespace : Namespace
   }
 
   protected override Slot MakeSlot(Name name)
-  { if(name.Type!=typeof(object)) throw new NotSupportedException("Global variables must be of type System.Object");
+  { if(name.Depth!=Name.Global) return base.MakeSlot(name);
+    if(name.Type!=typeof(object)) throw new NotSupportedException("Global variables must be of type System.Object");
     return new NamedFrameSlot(TopSlot, name.String);
   }
 }

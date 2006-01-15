@@ -401,6 +401,39 @@ public sealed class TopLevel
 }
 #endregion
 
+#region Generator
+public abstract class Generator : IEnumerator
+{ protected Generator(LocalEnvironment env) { environment=env; jump=uint.MaxValue; }
+
+  public object Current
+  { get
+    { if(state!=State.In) throw new InvalidOperationException();
+      return current;
+    }
+  }
+  
+  public bool MoveNext()
+  { try
+    { if(state==State.Done || !InnerNext(environment)) { state=State.Done; return false; }
+      state = State.In;
+      return true;
+    }
+    catch { state=State.Done; throw; }
+  }
+  
+  public void Reset() { throw new NotSupportedException(); }
+
+  protected abstract bool InnerNext(LocalEnvironment env);
+  protected uint jump;
+  protected object current;
+  
+  enum State : byte { Before, In, Done };
+  
+  readonly LocalEnvironment environment;
+  State state;
+}
+#endregion
+
 #region IProperty
 public interface IProperty
 { object Get(object[] args);
