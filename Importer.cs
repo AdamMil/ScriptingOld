@@ -88,12 +88,12 @@ public sealed class Importer
   public static Hashtable LoadedModules = new Hashtable();
 
   static MemberContainer LoadBuiltin(string name)
-  { string ns = Options.Current.Language.BuiltinsNamespace;
+  { string ns = Ops.GetCurrentLanguage().BuiltinsNamespace;
     if(ns==null) return null;
 
     if(builtinNames==null)
     { builtinNames = new SortedList();
-      foreach(Type type in Options.Current.Language.GetType().Assembly.GetTypes())
+      foreach(Type type in Ops.GetCurrentLanguage().GetType().Assembly.GetTypes())
         if(type.IsPublic && type.Namespace==ns)
         { object[] attrs = type.GetCustomAttributes(typeof(ScriptNameAttribute), false);
           if(attrs.Length!=0) builtinNames[((ScriptNameAttribute)attrs[0]).Name] = type;

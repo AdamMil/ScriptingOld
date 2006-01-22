@@ -33,6 +33,8 @@ public sealed class TypeGenerator
   { Assembly=assembly; TypeBuilder=typeBuilder;
   }
 
+  [Flags] public enum PropertyOverride { Read=1, Write=2, Either=Read|Write };
+
   public Type BaseType { get { return TypeBuilder.BaseType; } }
   public bool IsSealed { get { return (TypeBuilder.Attributes&TypeAttributes.Sealed)!=0; } }
 
@@ -78,10 +80,18 @@ public sealed class TypeGenerator
   }
 
   public CodeGenerator DefineMethod(string name, Type retType, params Type[] paramTypes)
-  { return DefineMethod(MethodAttributes.Public, name, retType, paramTypes);
+  { return DefineMethod(MethodAttributes.Public, name, IsSealed, retType, paramTypes);
+  }
+  public CodeGenerator DefineMethod(string name, bool final, Type retType, params Type[] paramTypes)
+  { return DefineMethod(MethodAttributes.Public, name, final, retType, paramTypes);
   }
   public CodeGenerator DefineMethod(MethodAttributes attrs, string name, Type retType, params Type[] paramTypes)
-  { MethodBuilder mb = TypeBuilder.DefineMethod(name, attrs, retType, paramTypes);
+  { return DefineMethod(attrs, name, IsSealed, retType, paramTypes);
+  }
+  public CodeGenerator DefineMethod(MethodAttributes attrs, string name, bool final,
+                                    Type retType, params Type[] paramTypes)
+  { if(final) attrs |= MethodAttributes.Final;
+    MethodBuilder mb = TypeBuilder.DefineMethod(name, attrs, retType, paramTypes);
     return Options.Current.Language.MakeCodeGenerator(this, mb, mb.GetILGenerator());
   }
 
@@ -171,22 +181,48 @@ public sealed class TypeGenerator
   }
 
   public CodeGenerator DefinePropertyOverride(string name)
-  { return DefinePropertyOverride(TypeBuilder.BaseType, name, IsSealed);
+  { return DefinePropertyOverride(TypeBuilder.BaseType, name, PropertyOverride.Either, IsSealed);
+  }
+  public CodeGenerator DefinePropertyOverride(string name, PropertyOverride po)
+  { return DefinePropertyOverride(TypeBuilder.BaseType, name, po, IsSealed);
   }
   public CodeGenerator DefinePropertyOverride(string name, bool final)
-  { return DefinePropertyOverride(TypeBuilder.BaseType, name, final);
+  { return DefinePropertyOverride(TypeBuilder.BaseType, name, PropertyOverride.Either, final);
+  }
+  public CodeGenerator DefinePropertyOverride(string name, PropertyOverride po, bool final)
+  { return DefinePropertyOverride(TypeBuilder.BaseType, name, po, final);
   }
   public CodeGenerator DefinePropertyOverride(Type type, string name)
-  { return DefinePropertyOverride(type.GetProperty(name), IsSealed);
+  { return DefinePropertyOverride(type.GetProperty(name), PropertyOverride.Either, IsSealed);
+  }
+  public CodeGenerator DefinePropertyOverride(Type type, PropertyOverride po, string name)
+  { return DefinePropertyOverride(type.GetProperty(name), po, IsSealed);
   }
   public CodeGenerator DefinePropertyOverride(Type type, string name, bool final)
-  { return DefinePropertyOverride(type.GetProperty(name), final);
+  { return DefinePropertyOverride(type.GetProperty(name), PropertyOverride.Either, final);
+  }
+  public CodeGenerator DefinePropertyOverride(Type type, string name, PropertyOverride po, bool final)
+  { return DefinePropertyOverride(type.GetProperty(name), po, final);
   }
   public CodeGenerator DefinePropertyOverride(PropertyInfo baseProp)
-  { return DefinePropertyOverride(baseProp, IsSealed);
+  { return DefinePropertyOverride(baseProp, PropertyOverride.Either, IsSealed);
   }
-  public CodeGenerator DefinePropertyOverride(PropertyInfo baseProp, bool final)
-  { return DefineMethodOverride(baseProp.CanRead ? baseProp.GetGetMethod() : baseProp.GetSetMethod(), final);
+  public CodeGenerator DefinePropertyOverride(PropertyInfo baseProp, PropertyOverride po)
+  { return DefinePropertyOverride(baseProp, po, IsSealed);
+  }
+  public CodeGenerator DefinePropertyOverride(PropertyInfo baseProp, PropertyOverride po, bool final)
+  { if(po==PropertyOverride.Either)
+    { if(baseProp.CanRead && baseProp.CanWrite)
+        throw new ArgumentException("This property has both a getter and a setter.");
+    }
+    else if(po==PropertyOverride.Read && !baseProp.CanRead)
+      throw new InvalidOperationException("This property has no getter.");
+    else if(po==PropertyOverride.Write && !baseProp.CanRead)
+      throw new InvalidOperationException("This property has no getter.");
+
+    return DefineMethodOverride(po==PropertyOverride.Read ? baseProp.GetGetMethod() :
+                                po==PropertyOverride.Write ? baseProp.GetSetMethod() :
+                                baseProp.CanRead ? baseProp.GetGetMethod() : baseProp.GetSetMethod(), final);
   }
 
   public void DefinePropertyOverride(string name, out CodeGenerator get, out CodeGenerator set)

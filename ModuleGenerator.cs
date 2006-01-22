@@ -110,13 +110,13 @@ public sealed class ModuleGenerator
     try
     { TopLevel.Current = new TopLevel();
       Options.Save();
-      bool addBuiltins = Options.Current.Language.ShouldAddBuiltins(type);
+      bool addBuiltins = Options.Current.Language.ShouldAddBuiltins(type); // FIXME: figure out how to handle Language changing at runtime
 
       Options.Current.Debug = Options.Current.DebugModules;
       Options.Current.Optimize = OptimizeType.Speed;
       Options.Current.IsPreCompilation = false;
 
-      if(addBuiltins) Options.Current.Language.Builtins.Import(TopLevel.Current);
+      if(addBuiltins) Options.Current.Language.Builtins.Import(TopLevel.Current); // TODO: affected by above FIXME
       ReflectedType.FromType(type, false).Import(TopLevel.Current);
 
       TypeGenerator tg = ag.DefineType(type.Name, typeof(BuiltinModule));

@@ -1,4 +1,3 @@
-
 /*
 Scripting is a low level framework for building dynamic languages.
 It produces languages which can be interpreted or compiled, targetting
@@ -272,7 +271,7 @@ public class CodeModule : MemberContainer
   public readonly string Name;
 
   static void Import(BindingSpace to, BindingSpace from, TopLevel env)
-  { Language lang = Options.Current.Language;
+  { Language lang = Ops.GetCurrentLanguage();
     foreach(DictionaryEntry de in from.Dict)
     { string key = (string)de.Key;
       if(!lang.ExcludeFromImport(key))
@@ -554,7 +553,7 @@ public abstract class MemberContainer
     IProperty prop = ret as IProperty;
     if(prop!=null) return prop.Call(instance, out ret, args);
     else
-    { IProcedure proc = ret as IProcedure;
+    { IProcedure proc = Ops.MakeProcedure(ret);
       if(proc==null) { ret=null; return false; }
       else { ret=proc.Call(args); return true; }
     }
@@ -644,6 +643,143 @@ public sealed class MultipleValues
 public sealed class Ops
 { Ops() { }
 
+  #region Errors
+  public static ArgumentException ArgError(string message) { return new ArgumentException(message); }
+  public static ArgumentException ArgError(string format, params object[] args)
+  { return new ArgumentException(string.Format(format, args));
+  }
+
+  public static ArgumentException ArityError(string name, int nargs, int min, int max)
+  { if(max==-1)
+    { if(nargs<min) return new ArgumentException(name+": expects at least "+min.ToString()+
+                                                 " arguments, but received "+nargs.ToString());
+    }
+    else if(nargs<min || nargs>max)
+      return new ArgumentException(name+": expects "+(min==max ? min.ToString() : min.ToString()+"-"+max.ToString())+
+                                   " arguments, but received "+nargs.ToString());
+    return new ArgumentException("wrong number of arguments");
+  }
+
+  public static void CheckArity(string name, object[] args, int num) { CheckArity(name, args.Length, num, num); }
+  public static void CheckArity(string name, object[] args, int min, int max)
+  { CheckArity(name, args.Length, min, max);
+  }
+  public static void CheckArity(string name, int nargs, int min, int max)
+  { if(max==-1)
+    { if(nargs<min) throw new ArgumentException(name+": expects at least "+min.ToString()+
+                                                " arguments, but received "+nargs.ToString());
+    }
+    else if(nargs<min || nargs>max)
+      throw new ArgumentException(name+": expects "+(min==max ? min.ToString() : min.ToString()+"-"+max.ToString())+
+                                  " arguments, but received "+nargs.ToString());
+  }
+
+  public static void CheckType(string name, object[] args, int index, Type type)
+  { if(Node.AreEquivalent(args[index]==null ? null : args[index].GetType(), type)) return;
+    try
+    { if(type==typeof(int)) { ExpectInt(args[index]); return; }
+    }
+    catch { }
+    throw new ArgumentException(string.Format("{0}: for argument {1}, expects type {2} but received {3}",
+                                              name, index, TypeName(type), TypeName(args[index])));
+  }
+
+  public static Binding CheckBinding(Binding bind)
+  { if(bind.Value==Binding.Unbound) throw UndefinedVariableException.FromName(bind.Name);
+    return bind;
+  }
+
+  public static void CheckVariable(object value, string name)
+  { if(value==Binding.Unbound) throw UndefinedVariableException.FromName(name);
+  }
+
+  public static object[] CheckValues(MultipleValues values, int length)
+  { if(values.Values.Length<length)
+      throw new ArgumentException("expected at least "+length.ToString()+" values, but received "+
+                                  values.Values.Length.ToString());
+    return values.Values;
+  }
+
+  public static char ExpectChar(object obj)
+  { try { return (char)obj; }
+    catch(InvalidCastException) { throw new ArgumentException("expected character but received "+TypeName(obj)); }
+  }
+
+  // TODO: coerce numbers into complexes?
+  public static Complex ExpectComplex(object obj)
+  { try { return (Complex)obj; }
+    catch(InvalidCastException) { throw new ArgumentException("expected complex but received "+TypeName(obj)); }
+  }
+
+  public static IEnumerator ExpectEnumerator(object obj)
+  { IEnumerable ea = obj as IEnumerable;
+    IEnumerator  e = ea==null ? obj as IEnumerator : ea.GetEnumerator();
+    if(e==null) throw new ArgumentException("expected enumerable object but received "+Ops.TypeName(obj));
+    return e;
+  }
+
+  public static IFancyProcedure ExpectFancyProcedure(object obj)
+  { IFancyProcedure ret = obj as IFancyProcedure;
+    if(ret==null) throw new ArgumentException("expected fancy function but received "+TypeName(obj));
+    return ret;
+  }
+
+  public static int ExpectInt(object obj)
+  { try { return (int)obj; }
+    catch(InvalidCastException) { throw new ArgumentException("expected int but received "+TypeName(obj)); }
+  }
+
+  public static IProcedure ExpectProcedure(object obj)
+  { IProcedure ret = MakeProcedure(obj);
+    if(ret==null) throw new ArgumentException("expected function but received "+TypeName(obj));
+    return ret;
+  }
+
+  public static Reference ExpectRef(object obj)
+  { Reference ret = obj as Reference;
+    if(ret==null) throw new ArgumentException("expected ref but received "+TypeName(obj));
+    return ret;
+  }
+
+  public static string ExpectString(object obj)
+  { string ret = obj as string;
+    if(ret==null) throw new ArgumentException("expected string but received "+TypeName(obj));
+    return ret;
+  }
+
+  public static ReflectedType ExpectType(object obj)
+  { ReflectedType rt = obj as ReflectedType;
+    if(rt!=null) return rt;
+    Type type = obj as Type;
+    if(type!=null) return ReflectedType.FromType(type);
+    throw new ArgumentException("expected type but received "+TypeName(obj));
+  }
+
+  public static MultipleValues ExpectValues(object obj)
+  { MultipleValues ret = obj as MultipleValues;
+    if(ret==null) throw new ArgumentException("expected multiplevalues but received "+TypeName(obj));
+    return ret;
+  }
+
+  public static object[] ExpectVector(object obj)
+  { object[] ret = obj as object[];
+    if(ret==null) throw new ArgumentException("expected vector but received "+TypeName(obj));
+    return ret;
+  }
+
+  public static SyntaxErrorException SyntaxError(string message) { return new SyntaxErrorException(message); }
+  public static SyntaxErrorException SyntaxError(string format, params object[] args)
+  { return new SyntaxErrorException(string.Format(format, args));
+  }
+  public static SyntaxErrorException SyntaxError(Node node, string message)
+  { return new SyntaxErrorException(message); // TODO: improve this with source information
+  }
+  public static SyntaxErrorException SyntaxError(Node node, string format, params object[] args)
+  { return SyntaxError(node, string.Format(format, args));
+  }
+  #endregion
+
+  #region Mathematical, etc ops
   public static object Add(object a, object b)
   { switch(Convert.GetTypeCode(a))
     { case TypeCode.Byte: return IntOps.Add((int)(byte)a, b);
@@ -711,22 +847,6 @@ public sealed class Ops
       }
     }
     return false;
-  }
-
-  public static ArgumentException ArgError(string message) { return new ArgumentException(message); }
-  public static ArgumentException ArgError(string format, params object[] args)
-  { return new ArgumentException(string.Format(format, args));
-  }
-
-  public static ArgumentException ArityError(string name, int nargs, int min, int max)
-  { if(max==-1)
-    { if(nargs<min) return new ArgumentException(name+": expects at least "+min.ToString()+
-                                                 " arguments, but received "+nargs.ToString());
-    }
-    else if(nargs<min || nargs>max)
-      return new ArgumentException(name+": expects "+(min==max ? min.ToString() : min.ToString()+"-"+max.ToString())+
-                                   " arguments, but received "+nargs.ToString());
-    return new ArgumentException("wrong number of arguments");
   }
 
   public static object BitwiseAnd(object a, object b)
@@ -821,59 +941,6 @@ public sealed class Ops
     return GetCurrentLanguage().BitwiseXor(a, b);
   }
 
-  public static object Call(string name) { return Call(GetGlobal(name), EmptyArray); }
-  public static object Call(string name, params object[] args) { return Call(GetGlobal(name), args); }
-  public static object Call(object func) { return ExpectProcedure(func).Call(EmptyArray); }
-  public static object Call(object func, params object[] args) { return ExpectProcedure(func).Call(args); }
-
-  public static object Call(object func, CallArg[] args)
-  { object[] positional, values;
-    string[] names;
-    EvaluateCallArgs(args, out positional, out names, out values);
-    return names==null ? ExpectProcedure(func).Call(positional)
-                       : ExpectFancyProcedure(func).Call(positional, names, values);
-  }
-
-  public static void CheckArity(string name, object[] args, int num) { CheckArity(name, args.Length, num, num); }
-  public static void CheckArity(string name, object[] args, int min, int max)
-  { CheckArity(name, args.Length, min, max);
-  }
-  public static void CheckArity(string name, int nargs, int min, int max)
-  { if(max==-1)
-    { if(nargs<min) throw new ArgumentException(name+": expects at least "+min.ToString()+
-                                                " arguments, but received "+nargs.ToString());
-    }
-    else if(nargs<min || nargs>max)
-      throw new ArgumentException(name+": expects "+(min==max ? min.ToString() : min.ToString()+"-"+max.ToString())+
-                                  " arguments, but received "+nargs.ToString());
-  }
-
-  public static void CheckType(string name, object[] args, int index, Type type)
-  { if(Node.AreEquivalent(args[index]==null ? null : args[index].GetType(), type)) return;
-    try
-    { if(type==typeof(int)) { ExpectInt(args[index]); return; }
-    }
-    catch { }
-    throw new ArgumentException(string.Format("{0}: for argument {1}, expects type {2} but received {3}",
-                                              name, index, TypeName(type), TypeName(args[index])));
-  }
-
-  public static Binding CheckBinding(Binding bind)
-  { if(bind.Value==Binding.Unbound) throw UndefinedVariableException.FromName(bind.Name);
-    return bind;
-  }
-
-  public static void CheckVariable(object value, string name)
-  { if(value==Binding.Unbound) throw UndefinedVariableException.FromName(name);
-  }
-
-  public static object[] CheckValues(MultipleValues values, int length)
-  { if(values.Values.Length<length)
-      throw new ArgumentException("expected at least "+length.ToString()+" values, but received "+
-                                  values.Values.Length.ToString());
-    return values.Values;
-  }
-
   public static int Compare(object a, object b)
   { switch(Convert.GetTypeCode(a))
     { case TypeCode.Boolean:
@@ -919,53 +986,6 @@ public sealed class Ops
     return GetCurrentLanguage().Compare(a, b);
   }
 
-  public static object ConvertTo(object o, Type type)
-  { switch(ConvertTo(o==null ? null : o.GetType(), type))
-    { case Conversion.Identity: case Conversion.Reference: return o;
-      case Conversion.None:
-        throw new InvalidCastException(string.Format("object cannot be converted to '{0}'", TypeName(type)));
-      default:
-        if(type==typeof(bool)) return FromBool(IsTrue(o));
-        if(type.IsSubclassOf(typeof(Delegate))) return MakeDelegate(o, type);
-        return Convert.ChangeType(o, type);
-    }
-  }
-
-  public static Conversion ConvertTo(Type from, Type to)
-  { if(from==null)
-      return !to.IsValueType ? Conversion.Reference : to==typeof(bool) ? Conversion.Safe : Conversion.None;
-    else if(to==from) return Conversion.Identity;
-    else if(to.IsAssignableFrom(from)) return Conversion.Reference;
-
-    // TODO: check whether it's faster to use IndexOf() or our own loop
-    // TODO: add support for Integer, Complex, and Decimal
-    if(to.IsPrimitive)
-    { if(from.IsPrimitive)
-      { if(to==typeof(bool)) return IsIn(typeConv[9], from) ? Conversion.None : Conversion.Safe;
-        else
-          switch(Type.GetTypeCode(from))
-          { case TypeCode.Int32:  return IsIn(typeConv[4], to) ? Conversion.Safe : Conversion.Unsafe;
-            case TypeCode.Double: return Conversion.Unsafe;
-            case TypeCode.Int64:  return IsIn(typeConv[6], to) ? Conversion.Safe : Conversion.Unsafe;
-            case TypeCode.Char:   return IsIn(typeConv[8], to) ? Conversion.Safe : Conversion.Unsafe;
-            case TypeCode.Byte:   return IsIn(typeConv[1], to) ? Conversion.Safe : Conversion.Unsafe;
-            case TypeCode.UInt32: return IsIn(typeConv[5], to) ? Conversion.Safe : Conversion.Unsafe;
-            case TypeCode.Single: return to==typeof(double) ? Conversion.Safe : Conversion.Unsafe;
-            case TypeCode.Int16:  return IsIn(typeConv[2], to) ? Conversion.Safe : Conversion.Unsafe;
-            case TypeCode.UInt16: return IsIn(typeConv[3], to) ? Conversion.Safe : Conversion.Unsafe;
-            case TypeCode.SByte:  return IsIn(typeConv[0], to) ? Conversion.Safe : Conversion.Unsafe;
-            case TypeCode.UInt64: return IsIn(typeConv[7], to) ? Conversion.Safe : Conversion.Unsafe;
-          }
-       }
-       else if(from==typeof(object)) return Conversion.Unsafe;
-    }
-    if(from.IsArray && to.IsArray && to.GetElementType().IsAssignableFrom(from.GetElementType()))
-      return Conversion.Reference;
-    if(to.IsSubclassOf(typeof(Delegate)))
-      return typeof(IProcedure).IsAssignableFrom(from) ? Conversion.Unsafe : Conversion.None;
-    return Conversion.None;
-  }
-
   public static object Divide(object a, object b)
   { switch(Convert.GetTypeCode(a))
     { case TypeCode.Byte: return IntOps.Divide((byte)a, b, false);
@@ -991,135 +1011,6 @@ public sealed class Ops
   }
 
   public static object Equal(object a, object b) { return FromBool(AreEqual(a, b)); }
-
-  public static void EvaluateCallArgs(CallArg[] args, out object[] positional, out string[] names, out object[] values)
-  { int ai=0, pi=0, num=0;
-    bool hasdict = false;
-
-    for(; ai<args.Length; ai++)
-      if(args[ai].Type==null) num++;
-      else if(args[ai].Type==CallArg.ListType)
-      { ICollection col = args[ai].Value as ICollection;
-        if(col!=null) num += col.Count;
-        else throw new ArgumentException("Expected ICollection list type, but received "+TypeName(args[ai].Value));
-      }
-      else if(args[ai].Type is int) num += (int)args[ai].Type;
-      else break;
-
-    positional = num==0 ? null : new object[num];
-    for(int i=0; i<ai; i++)
-      if(args[i].Type==null) positional[pi++] = args[i].Value;
-      else if(args[i].Type==CallArg.ListType)
-      { ICollection col = (ICollection)args[i].Value as ICollection;
-        col.CopyTo(positional, pi);
-        pi += col.Count;
-      }
-      else if(args[i].Type is int)
-      { object[] items = (object[])args[i].Value;
-        items.CopyTo(positional, pi);
-        pi += items.Length;
-      }
-
-    if(ai==args.Length) { names=null; values=null; return; }
-
-    num = 0;
-    for(int i=ai; i<args.Length; i++)
-      if(args[i].Type==CallArg.DictType)
-      { IDictionary dict = args[i].Value as IDictionary;
-        if(dict!=null) num += dict.Count;
-        else throw new ArgumentException("Expected IDictionary dict type, but received "+TypeName(args[i].Value));
-        hasdict = true;
-      }
-      else num += ((object[])args[i].Type).Length;
-
-    if(!hasdict) { names=(string[])args[ai].Value; values=(object[])args[ai].Type; return; }
-
-    names = new string[num];
-    values = new object[num];
-    pi = 0;
-    for(; ai<args.Length; ai++)
-      if(args[ai].Type!=CallArg.DictType)
-      { string[] na = (string[])args[ai].Value;
-        na.CopyTo(names, pi);
-        ((object[])args[ai].Type).CopyTo(values, pi);
-        pi += na.Length;
-      }
-      else
-      { IDictionary dict = (IDictionary)args[ai].Value;
-        foreach(DictionaryEntry e in dict)
-        { names[pi] = Ops.Str(e.Key);
-          values[pi] = e.Value;
-          pi++;
-        }
-      }
-  }
-
-  public static char ExpectChar(object obj)
-  { try { return (char)obj; }
-    catch(InvalidCastException) { throw new ArgumentException("expected character but received "+TypeName(obj)); }
-  }
-
-  // TODO: coerce numbers into complexes?
-  public static Complex ExpectComplex(object obj)
-  { try { return (Complex)obj; }
-    catch(InvalidCastException) { throw new ArgumentException("expected complex but received "+TypeName(obj)); }
-  }
-
-  public static IEnumerator ExpectEnumerator(object obj)
-  { IEnumerable ea = obj as IEnumerable;
-    IEnumerator  e = ea==null ? obj as IEnumerator : ea.GetEnumerator();
-    if(e==null) throw new ArgumentException("expected enumerable object but received "+Ops.TypeName(obj));
-    return e;
-  }
-
-  public static IFancyProcedure ExpectFancyProcedure(object obj)
-  { IFancyProcedure ret = obj as IFancyProcedure;
-    if(ret==null) throw new ArgumentException("expected fancy function but received "+TypeName(obj));
-    return ret;
-  }
-
-  public static int ExpectInt(object obj)
-  { try { return (int)obj; }
-    catch(InvalidCastException) { throw new ArgumentException("expected int but received "+TypeName(obj)); }
-  }
-
-  public static IProcedure ExpectProcedure(object obj)
-  { IProcedure ret = obj as IProcedure;
-    if(ret==null) throw new ArgumentException("expected function but received "+TypeName(obj));
-    return ret;
-  }
-
-  public static Reference ExpectRef(object obj)
-  { Reference ret = obj as Reference;
-    if(ret==null) throw new ArgumentException("expected ref but received "+TypeName(obj));
-    return ret;
-  }
-
-  public static string ExpectString(object obj)
-  { string ret = obj as string;
-    if(ret==null) throw new ArgumentException("expected string but received "+TypeName(obj));
-    return ret;
-  }
-
-  public static ReflectedType ExpectType(object obj)
-  { ReflectedType rt = obj as ReflectedType;
-    if(rt!=null) return rt;
-    Type type = obj as Type;
-    if(type!=null) return ReflectedType.FromType(type);
-    throw new ArgumentException("expected type but received "+TypeName(obj));
-  }
-
-  public static MultipleValues ExpectValues(object obj)
-  { MultipleValues ret = obj as MultipleValues;
-    if(ret==null) throw new ArgumentException("expected multiplevalues but received "+TypeName(obj));
-    return ret;
-  }
-
-  public static object[] ExpectVector(object obj)
-  { object[] ret = obj as object[];
-    if(ret==null) throw new ArgumentException("expected vector but received "+TypeName(obj));
-    return ret;
-  }
 
   public static object FloorDivide(object a, object b)
   { switch(Convert.GetTypeCode(a))
@@ -1154,139 +1045,6 @@ public sealed class Ops
     return GetCurrentLanguage().FloorDivide(a, b);
   }
 
-  // TODO: check whether we can eliminate this (ie, "(eq? #t #t)" still works reliably)
-  public static object FromBool(bool value) { return value ? TRUE : FALSE; }
-
-  public static Language GetCurrentLanguage()
-  { return CurrentFunction==null ? Options.Current.Language : CurrentFunction.Language;
-  }
-
-  public static object GetGlobal(string name) { return TopLevel.Current.Get(name); }
-  public static bool GetGlobal(string name, out object value) { return TopLevel.Current.Get(name, out value); }
-
-  public static object GetIndex(object col, object index)
-  { IList list = col as IList;
-    if(list!=null) return list[ToInt(index)];
-    IDictionary dict = col as IDictionary;
-    if(dict!=null) return dict[index];
-    throw new ArgumentException("objects of type '"+TypeName(col)+"' are not indexable");
-  }
-
-  public static void SetIndex(object value, object col, object index)
-  { IList list = col as IList;
-    if(list!=null) list[ToInt(index)] = value;
-    else
-    { IDictionary dict = col as IDictionary;
-      if(dict!=null) dict[index] = value;
-      else throw new ArgumentException("objects of type '"+TypeName(col)+"' are not indexable");
-    }
-  }
-
-  public static ICollection GetMemberNames(object obj) { return GetMemberNames(obj, false); }
-  public static ICollection GetMemberNames(object obj, bool includeImports)
-  { return MemberContainer.FromObject(obj).GetMemberNames(includeImports);
-  }
-
-  public static IProcedure GetAccessor(object obj, string name)
-  { return MemberContainer.FromObject(obj).GetAccessor(obj, name);
-  }
-  public static bool GetAccessor(object obj, string name, out IProcedure proc)
-  { return MemberContainer.FromObject(obj).GetAccessor(obj, name, out proc);
-  }
-
-  public static object CallProperty(object obj, string name) { return CallProperty(obj, name, EmptyArray); }
-  public static bool CallProperty(object obj, string name, out object ret)
-  { return CallProperty(obj, name, out ret, EmptyArray);
-  }
-
-  public static object CallProperty(object obj, string name, params object[] args)
-  { return MemberContainer.FromObject(obj).CallProperty(obj, name, args);
-  }
-  public static bool CallProperty(object obj, string name, out object ret, params object[] args)
-  { return MemberContainer.FromObject(obj).CallProperty(obj, name, out ret, args);
-  }
-
-  public static object CallProperty(object obj, string name, object[] positional, string[] names, object[] values)
-  { return MemberContainer.FromObject(obj).CallProperty(obj, name, positional, names, values);
-  }
-  public static bool CallProperty(object obj, string name, out object ret,
-                                    object[] positional, string[] names, object[] values)
-  { return MemberContainer.FromObject(obj).CallProperty(obj, name, out ret, positional, names, values);
-  }
-
-  public static object CallProperty(object obj, string name, CallArg[] args)
-  { MemberContainer mc = MemberContainer.FromObject(obj);
-    object[] pos, values;
-    string[] names;
-    EvaluateCallArgs(args, out pos, out names, out values);
-    return names==null ? mc.CallProperty(obj, name, pos) : mc.CallProperty(obj, name, pos, names, values);
-  }
-
-  public static bool CallProperty(object obj, string name, out object ret, CallArg[] args)
-  { MemberContainer mc = MemberContainer.FromObject(obj);
-    object[] positional, values;
-    string[] names;
-    EvaluateCallArgs(args, out positional, out names, out values);
-    return names==null ? mc.CallProperty(obj, name, out ret, positional)
-                       : mc.CallProperty(obj, name, out ret, positional, names, values);
-  }
-
-  public static void DeleteSlot(object obj, string name) { MemberContainer.FromObject(obj).DeleteSlot(obj, name); }
-
-  public static object GetProperty(object obj, string name)
-  { return MemberContainer.FromObject(obj).GetProperty(obj, name);
-  }
-  public static bool GetProperty(object obj, string name, out object value)
-  { return MemberContainer.FromObject(obj).GetProperty(obj, name, out value);
-  }
-
-  public static void SetProperty(object value, object obj, string name)
-  { MemberContainer.FromObject(obj).SetProperty(obj, name, value);
-  }
-  public static void TrySetProperty(object value, object obj, string name)
-  { MemberContainer.FromObject(obj).TrySetProperty(obj, name, value);
-  }
-
-  public static object GetSlot(object obj, string name) { return MemberContainer.FromObject(obj).GetSlot(obj, name); }
-  public static bool GetSlot(object obj, string name, out object value)
-  { return MemberContainer.FromObject(obj).GetSlot(obj, name, out value);
-  }
-
-  public static void SetSlot(object value, object obj, string name)
-  { MemberContainer.FromObject(obj).SetSlot(obj, name, value);
-  }
-  public static bool TrySetSlot(object value, object obj, string name)
-  { return MemberContainer.FromObject(obj).TrySetSlot(obj, name, value);
-  }
-
-  public static object Invoke(object target, string name) { return Invoke(target, name, EmptyArray); }
-  public static object Invoke(object target, string name, params object[] args)
-  { return Call(GetSlot(target, name), args);
-  }
-
-  public static bool Invoke(object target, string name, out object retValue)
-  { return Invoke(target, name, out retValue, EmptyArray);
-  }
-  public static bool Invoke(object target, string name, out object retValue, params object[] args)
-  { object method;
-    if(GetSlot(target, name, out method)) { retValue = Call(method, args); return true; }
-    else { retValue = null; return false; }
-  }
-
-  public static object InvokeProperty(object target, string name) { return InvokeProperty(target, name, EmptyArray); }
-  public static object InvokeProperty(object target, string name, params object[] args)
-  { return Call(GetProperty(target, name), args);
-  }
-
-  public static bool InvokeProperty(object target, string name, out object retValue)
-  { return InvokeProperty(target, name, out retValue, EmptyArray);
-  }
-  public static bool InvokeProperty(object target, string name, out object retValue, params object[] args)
-  { object method;
-    if(GetProperty(target, name, out method)) { retValue = Call(method, args); return true; }
-    else { retValue = null; return false; }
-  }
-
   public static bool IsTrue(object obj) { return GetCurrentLanguage().IsTrue(obj); }
 
   public static object LeftShift(object a, object b)
@@ -1311,57 +1069,6 @@ public sealed class Ops
 
   public static object Less(object a, object b) { return FromBool(Compare(a,b)<0); }
   public static object LessEqual(object a, object b) { return FromBool(Compare(a,b)<=0); }
-
-  public static Delegate MakeDelegate(object callable, Type delegateType)
-  { IProcedure proc = callable as IProcedure;
-    if(proc==null) throw new ArgumentException("delegate: expected a procedure");
-    return Delegate.CreateDelegate(delegateType, Interop.MakeDelegateWrapper(proc, delegateType), "Handle");
-  }
-
-  public static Exception MakeException(object exobj, object[] args)
-  { Exception ex = exobj as Exception;
-
-    string msg;
-    if(args==null || args.Length==0)
-    { if(ex!=null) return ex;
-      msg = null;
-    }
-    else
-    { System.Text.StringBuilder sb = new System.Text.StringBuilder();
-      foreach(object o in args) sb.Append(Str(o));
-      msg = sb.ToString();
-
-      if(ex!=null) // TODO: see if we can find a better way to handle this case
-        throw new ArgumentException("Can't specify additional data for an exception that's already been created. An "+
-                                    "attempt was made to throw an exception of type "+TypeName(ex)+" with the "+
-                                    "following extra data:\n\n"+msg+"\n\nYou can either throw an exception type, "+
-                                    "with extra data, or an exception object without extra data.");
-    }
-
-    ReflectedType type = exobj as ReflectedType;
-    if(type==null)
-    { if(exobj is Type) type = ReflectedType.FromType((Type)exobj);
-      if(type==null)
-        throw new ArgumentException("An attempt was made to throw an exception from an object of type "+
-                                    TypeName(exobj)+", which is neither a System.Exception nor a type which, when "+
-                                    "instantiated, will produce a System.Exception. "+
-                                    (msg==null ? "There was no extra data." : "The extra data was:\n"+msg));
-    }
-
-    IProcedure cons = type.Constructor;
-    if(cons==null) throw new ArgumentException("Cannot create an exception from "+Ops.TypeName(type)+
-                                               " because it has no constructor");
-    // TODO: make less assumptions about the types of constructors it has
-    if(args==null || args.Length==0) ex = cons.Call(EmptyArray) as Exception;
-    else
-    { System.Text.StringBuilder sb = new System.Text.StringBuilder();
-      foreach(object o in args) sb.Append(Str(o));
-      ex = cons.Call(sb.ToString()) as Exception;
-    }
-    if(ex==null) throw new ArgumentException("Cannot create an exception from "+Ops.TypeName(type)+
-                                             " because it is not derived from System.Exception");
-    return ex;
-  }
 
   public static object Modulus(object a, object b)
   { switch(Convert.GetTypeCode(a))
@@ -1490,8 +1197,6 @@ public sealed class Ops
     return Modulus(Power(a, b), c);
   }
 
-  public static string ToCode(object obj) { return GetCurrentLanguage().ToCode (obj); }
-
   public static object RightShift(object a, object b)
   { switch(Convert.GetTypeCode(a))
     { case TypeCode.Byte:  return IntOps.RightShift((int)(byte)a, b);
@@ -1511,12 +1216,6 @@ public sealed class Ops
     }
     return GetCurrentLanguage().RightShift(a, b);
   }
-
-  public static void SetMember(object obj, string name, object value)
-  { MemberContainer.FromObject(obj).SetSlot(obj, name, value);
-  }
-
-  public static string Str(object obj) { return Options.Current.Language.Str(obj); }
 
   public static object Subtract(object a, object b)
   { switch(Convert.GetTypeCode(a))
@@ -1547,26 +1246,41 @@ public sealed class Ops
     }
     return GetCurrentLanguage().Subtract(a, b);
   }
+  #endregion
 
-  public static SyntaxErrorException SyntaxError(string message) { return new SyntaxErrorException(message); }
-  public static SyntaxErrorException SyntaxError(string format, params object[] args)
-  { return new SyntaxErrorException(string.Format(format, args));
-  }
-  public static SyntaxErrorException SyntaxError(Node node, string message)
-  { return new SyntaxErrorException(message); // TODO: improve this with source information
-  }
-  public static SyntaxErrorException SyntaxError(Node node, string format, params object[] args)
-  { return SyntaxError(node, string.Format(format, args));
+  #region Miscellaneous
+  public static object FromBool(bool value) { return value ? TRUE : FALSE; }
+
+  // FIXME: when inside the compiler, it should always return Options.Current.Language (i think?)
+  // eg, if the compiler is invoked by some script, and the language being compiled is different from the language
+  // invoking the compiler...
+  public static Language GetCurrentLanguage()
+  { return CurrentFunction==null ? Options.Current.Language : CurrentFunction.Language;
   }
 
-  public static double ToFloat(object o)
-  { if(o is double) return (double)o;
-    if(o is Complex)
-    { Complex c = (Complex)o;
-      if(c.imag==0) return c.real;
+  public static object GetGlobal(string name) { return TopLevel.Current.Get(name); }
+  public static bool GetGlobal(string name, out object value) { return TopLevel.Current.Get(name, out value); }
+
+  public static object GetIndex(object col, object index)
+  { IList list = col as IList;
+    if(list!=null) return list[ToInt(index)];
+    IDictionary dict = col as IDictionary;
+    if(dict!=null) return dict[index];
+    throw new ArgumentException("objects of type '"+TypeName(col)+"' are not indexable");
+  }
+
+  public static void SetIndex(object value, object col, object index)
+  { IList list = col as IList;
+    if(list!=null) list[ToInt(index)] = value;
+    else
+    { IDictionary dict = col as IDictionary;
+      if(dict!=null) dict[index] = value;
+      else throw new ArgumentException("objects of type '"+TypeName(col)+"' are not indexable");
     }
-    return Convert.ToDouble(o);
   }
+
+  public static string Str(object o) { return GetCurrentLanguage().Str(o); }
+  public static string ToCode(object o) { return GetCurrentLanguage().ToCode(o); }
 
   public static string ToHex(uint number, int minlen)
   { const string cvt = "0123456789ABCDEF";
@@ -1580,6 +1294,327 @@ public sealed class Ops
       } while(number!=0 && len<minlen);
       return new string(chars, 8-len, len);
     }
+  }
+
+  public static string TypeName(object o) { return TypeName(o==null ? null : o.GetType()); }
+  public static string TypeName(ReflectedType type) { return TypeName(type.Type); }
+  public static string TypeName(Type type) { return GetCurrentLanguage().TypeName(type); }
+  #endregion
+  
+  #region Procedures
+  public static object Call(string name) { return Call(GetGlobal(name), EmptyArray); }
+  public static object Call(string name, params object[] args) { return Call(GetGlobal(name), args); }
+  public static object Call(object func) { return ExpectProcedure(func).Call(EmptyArray); }
+  public static object Call(object func, params object[] args) { return ExpectProcedure(func).Call(args); }
+
+  public static object Call(object func, CallArg[] args)
+  { object[] positional, values;
+    string[] names;
+    EvaluateCallArgs(args, out positional, out names, out values);
+    return names==null ? ExpectProcedure(func).Call(positional)
+                       : ExpectFancyProcedure(func).Call(positional, names, values);
+  }
+
+  public static void EvaluateCallArgs(CallArg[] args, out object[] positional, out string[] names, out object[] values)
+  { int ai=0, pi=0, num=0;
+    bool hasdict = false;
+
+    for(; ai<args.Length; ai++)
+      if(args[ai].Type==null) num++;
+      else if(args[ai].Type==CallArg.ListType)
+      { ICollection col = args[ai].Value as ICollection;
+        if(col!=null) num += col.Count;
+        else throw new ArgumentException("Expected ICollection list type, but received "+TypeName(args[ai].Value));
+      }
+      else if(args[ai].Type is int) num += (int)args[ai].Type;
+      else break;
+
+    positional = num==0 ? null : new object[num];
+    for(int i=0; i<ai; i++)
+      if(args[i].Type==null) positional[pi++] = args[i].Value;
+      else if(args[i].Type==CallArg.ListType)
+      { ICollection col = (ICollection)args[i].Value as ICollection;
+        col.CopyTo(positional, pi);
+        pi += col.Count;
+      }
+      else if(args[i].Type is int)
+      { object[] items = (object[])args[i].Value;
+        items.CopyTo(positional, pi);
+        pi += items.Length;
+      }
+
+    if(ai==args.Length) { names=null; values=null; return; }
+
+    num = 0;
+    for(int i=ai; i<args.Length; i++)
+      if(args[i].Type==CallArg.DictType)
+      { IDictionary dict = args[i].Value as IDictionary;
+        if(dict!=null) num += dict.Count;
+        else throw new ArgumentException("Expected IDictionary dict type, but received "+TypeName(args[i].Value));
+        hasdict = true;
+      }
+      else num += ((object[])args[i].Type).Length;
+
+    if(!hasdict) { names=(string[])args[ai].Value; values=(object[])args[ai].Type; return; }
+
+    names = new string[num];
+    values = new object[num];
+    pi = 0;
+    for(; ai<args.Length; ai++)
+      if(args[ai].Type!=CallArg.DictType)
+      { string[] na = (string[])args[ai].Value;
+        na.CopyTo(names, pi);
+        ((object[])args[ai].Type).CopyTo(values, pi);
+        pi += na.Length;
+      }
+      else
+      { IDictionary dict = (IDictionary)args[ai].Value;
+        foreach(DictionaryEntry e in dict)
+        { names[pi] = Ops.Str(e.Key);
+          values[pi] = e.Value;
+          pi++;
+        }
+      }
+  }
+
+  public static bool IsProcedure(object o) { return o is IProcedure || o is Delegate; }
+  
+  public static IProcedure MakeProcedure(object o)
+  { if(o!=null)
+    { IProcedure proc = o as IProcedure;
+      if(proc!=null) return proc;
+      
+      Delegate del = o as Delegate;
+      if(del!=null) return Interop.MakeProcedure(del);
+    }    
+    return null;
+  }
+
+  public static IProcedure MakeProcedure(Delegate del) { return Interop.MakeProcedure(del); }
+  #endregion
+
+  #region Slots, properties, etc
+  public static object CallProperty(object obj, string name) { return CallProperty(obj, name, EmptyArray); }
+  public static bool CallProperty(object obj, string name, out object ret)
+  { return CallProperty(obj, name, out ret, EmptyArray);
+  }
+
+  public static object CallProperty(object obj, string name, params object[] args)
+  { return MemberContainer.FromObject(obj).CallProperty(obj, name, args);
+  }
+  public static bool CallProperty(object obj, string name, out object ret, params object[] args)
+  { return MemberContainer.FromObject(obj).CallProperty(obj, name, out ret, args);
+  }
+
+  public static object CallProperty(object obj, string name, object[] positional, string[] names, object[] values)
+  { return MemberContainer.FromObject(obj).CallProperty(obj, name, positional, names, values);
+  }
+  public static bool CallProperty(object obj, string name, out object ret,
+                                    object[] positional, string[] names, object[] values)
+  { return MemberContainer.FromObject(obj).CallProperty(obj, name, out ret, positional, names, values);
+  }
+
+  public static object CallProperty(object obj, string name, CallArg[] args)
+  { MemberContainer mc = MemberContainer.FromObject(obj);
+    object[] pos, values;
+    string[] names;
+    EvaluateCallArgs(args, out pos, out names, out values);
+    return names==null ? mc.CallProperty(obj, name, pos) : mc.CallProperty(obj, name, pos, names, values);
+  }
+
+  public static bool CallProperty(object obj, string name, out object ret, CallArg[] args)
+  { MemberContainer mc = MemberContainer.FromObject(obj);
+    object[] positional, values;
+    string[] names;
+    EvaluateCallArgs(args, out positional, out names, out values);
+    return names==null ? mc.CallProperty(obj, name, out ret, positional)
+                       : mc.CallProperty(obj, name, out ret, positional, names, values);
+  }
+
+  public static void DeleteSlot(object obj, string name) { MemberContainer.FromObject(obj).DeleteSlot(obj, name); }
+
+  public static IProcedure GetAccessor(object obj, string name)
+  { return MemberContainer.FromObject(obj).GetAccessor(obj, name);
+  }
+  public static bool GetAccessor(object obj, string name, out IProcedure proc)
+  { return MemberContainer.FromObject(obj).GetAccessor(obj, name, out proc);
+  }
+
+  public static ICollection GetMemberNames(object obj) { return GetMemberNames(obj, false); }
+  public static ICollection GetMemberNames(object obj, bool includeImports)
+  { return MemberContainer.FromObject(obj).GetMemberNames(includeImports);
+  }
+
+  public static object GetProperty(object obj, string name)
+  { return MemberContainer.FromObject(obj).GetProperty(obj, name);
+  }
+  public static bool GetProperty(object obj, string name, out object value)
+  { return MemberContainer.FromObject(obj).GetProperty(obj, name, out value);
+  }
+
+  public static void SetProperty(object value, object obj, string name)
+  { MemberContainer.FromObject(obj).SetProperty(obj, name, value);
+  }
+  public static void TrySetProperty(object value, object obj, string name)
+  { MemberContainer.FromObject(obj).TrySetProperty(obj, name, value);
+  }
+
+  public static object GetSlot(object obj, string name) { return MemberContainer.FromObject(obj).GetSlot(obj, name); }
+  public static bool GetSlot(object obj, string name, out object value)
+  { return MemberContainer.FromObject(obj).GetSlot(obj, name, out value);
+  }
+
+  public static void SetSlot(object value, object obj, string name)
+  { MemberContainer.FromObject(obj).SetSlot(obj, name, value);
+  }
+  public static bool TrySetSlot(object value, object obj, string name)
+  { return MemberContainer.FromObject(obj).TrySetSlot(obj, name, value);
+  }
+
+  public static object Invoke(object target, string name) { return Invoke(target, name, EmptyArray); }
+  public static object Invoke(object target, string name, params object[] args)
+  { return Call(GetSlot(target, name), args);
+  }
+
+  public static bool Invoke(object target, string name, out object retValue)
+  { return Invoke(target, name, out retValue, EmptyArray);
+  }
+  public static bool Invoke(object target, string name, out object retValue, params object[] args)
+  { object method;
+    if(GetSlot(target, name, out method)) { retValue = Call(method, args); return true; }
+    else { retValue = null; return false; }
+  }
+
+  public static object InvokeProperty(object target, string name) { return InvokeProperty(target, name, EmptyArray); }
+  public static object InvokeProperty(object target, string name, params object[] args)
+  { return Call(GetProperty(target, name), args);
+  }
+
+  public static bool InvokeProperty(object target, string name, out object retValue)
+  { return InvokeProperty(target, name, out retValue, EmptyArray);
+  }
+  public static bool InvokeProperty(object target, string name, out object retValue, params object[] args)
+  { object method;
+    if(GetProperty(target, name, out method)) { retValue = Call(method, args); return true; }
+    else { retValue = null; return false; }
+  }
+  #endregion
+
+  #region Type conversion, creation, etc
+  public static object ConvertTo(object o, Type type)
+  { switch(ConvertTo(o==null ? null : o.GetType(), type))
+    { case Conversion.Identity: case Conversion.Reference: return o;
+      case Conversion.None:
+        throw new InvalidCastException(string.Format("object cannot be converted to '{0}'", TypeName(type)));
+      default:
+        if(type==typeof(bool)) return FromBool(IsTrue(o));
+        else if(type.IsSubclassOf(typeof(Delegate))) return MakeDelegate(o, type);
+        else if(type==typeof(IProcedure))
+        { Delegate del = o as Delegate;
+          if(del!=null) return Interop.MakeProcedure(del);
+        }
+        return Convert.ChangeType(o, type);
+    }
+  }
+
+  public static Conversion ConvertTo(Type from, Type to)
+  { if(from==null)
+      return !to.IsValueType ? Conversion.Reference : to==typeof(bool) ? Conversion.Safe : Conversion.None;
+    else if(to==from) return Conversion.Identity;
+    else if(to.IsAssignableFrom(from)) return Conversion.Reference;
+
+    // TODO: check whether it's faster to use IndexOf() or our own loop
+    // TODO: add support for Integer, Complex, and Decimal
+    if(to.IsPrimitive)
+    { if(from.IsPrimitive)
+      { if(to==typeof(bool)) return IsIn(typeConv[9], from) ? Conversion.None : Conversion.Safe;
+        else
+          switch(Type.GetTypeCode(from))
+          { case TypeCode.Int32:  return IsIn(typeConv[4], to) ? Conversion.Safe : Conversion.Unsafe;
+            case TypeCode.Double: return Conversion.Unsafe;
+            case TypeCode.Int64:  return IsIn(typeConv[6], to) ? Conversion.Safe : Conversion.Unsafe;
+            case TypeCode.Char:   return IsIn(typeConv[8], to) ? Conversion.Safe : Conversion.Unsafe;
+            case TypeCode.Byte:   return IsIn(typeConv[1], to) ? Conversion.Safe : Conversion.Unsafe;
+            case TypeCode.UInt32: return IsIn(typeConv[5], to) ? Conversion.Safe : Conversion.Unsafe;
+            case TypeCode.Single: return to==typeof(double) ? Conversion.Safe : Conversion.Unsafe;
+            case TypeCode.Int16:  return IsIn(typeConv[2], to) ? Conversion.Safe : Conversion.Unsafe;
+            case TypeCode.UInt16: return IsIn(typeConv[3], to) ? Conversion.Safe : Conversion.Unsafe;
+            case TypeCode.SByte:  return IsIn(typeConv[0], to) ? Conversion.Safe : Conversion.Unsafe;
+            case TypeCode.UInt64: return IsIn(typeConv[7], to) ? Conversion.Safe : Conversion.Unsafe;
+          }
+       }
+       else if(from==typeof(object)) return Conversion.Unsafe;
+    }
+    if(from.IsArray && to.IsArray && to.GetElementType().IsAssignableFrom(from.GetElementType()))
+      return Conversion.Reference;
+    else if(to.IsSubclassOf(typeof(Delegate)) && typeof(IProcedure).IsAssignableFrom(from) ||
+            to==typeof(IProcedure) && from.IsSubclassOf(typeof(Delegate)))
+      return Conversion.Unsafe;
+    return Conversion.None;
+  }
+
+  public static Delegate MakeDelegate(object callable, Type delegateType)
+  { IProcedure proc = callable as IProcedure;
+    if(proc!=null) return Interop.MakeDelegate(proc, delegateType);
+    
+    Delegate del = callable as Delegate;
+    if(del!=null && delegateType.IsAssignableFrom(del.GetType())) return del;
+
+    throw new ArgumentException("expected a procedure or a delegate compatible with "+TypeName(delegateType));
+  }
+
+  public static Exception MakeException(object exobj, object[] args)
+  { Exception ex = exobj as Exception;
+
+    string msg;
+    if(args==null || args.Length==0)
+    { if(ex!=null) return ex;
+      msg = null;
+    }
+    else
+    { System.Text.StringBuilder sb = new System.Text.StringBuilder();
+      foreach(object o in args) sb.Append(Str(o));
+      msg = sb.ToString();
+
+      if(ex!=null) // TODO: see if we can find a better way to handle this case
+        throw new ArgumentException("Can't specify additional data for an exception that's already been created. An "+
+                                    "attempt was made to throw an exception of type "+TypeName(ex)+" with the "+
+                                    "following extra data:\n\n"+msg+"\n\nYou can either throw an exception type, "+
+                                    "with extra data, or an exception object without extra data.");
+    }
+
+    ReflectedType type = exobj as ReflectedType;
+    if(type==null)
+    { if(exobj is Type) type = ReflectedType.FromType((Type)exobj);
+      if(type==null)
+        throw new ArgumentException("An attempt was made to throw an exception from an object of type "+
+                                    TypeName(exobj)+", which is neither a System.Exception nor a type which, when "+
+                                    "instantiated, will produce a System.Exception. "+
+                                    (msg==null ? "There was no extra data." : "The extra data was:\n"+msg));
+    }
+
+    IProcedure cons = type.Constructor;
+    if(cons==null) throw new ArgumentException("Cannot create an exception from "+Ops.TypeName(type)+
+                                               " because it has no constructor");
+    // TODO: make less assumptions about the types of constructors it has
+    if(args==null || args.Length==0) ex = cons.Call(EmptyArray) as Exception;
+    else
+    { System.Text.StringBuilder sb = new System.Text.StringBuilder();
+      foreach(object o in args) sb.Append(Str(o));
+      ex = cons.Call(sb.ToString()) as Exception;
+    }
+    if(ex==null) throw new ArgumentException("Cannot create an exception from "+Ops.TypeName(type)+
+                                             " because it is not derived from System.Exception");
+    return ex;
+  }
+
+  public static double ToFloat(object o)
+  { if(o is double) return (double)o;
+    if(o is Complex)
+    { Complex c = (Complex)o;
+      if(c.imag==0) return c.real;
+    }
+    return Convert.ToDouble(o);
   }
 
   public static int ToInt(object o)
@@ -1622,11 +1657,9 @@ public sealed class Ops
       default: return checked((long)Convert.ToSingle(o));
     }
   }
+  #endregion
 
-  public static string TypeName(object o) { return TypeName(o==null ? null : o.GetType()); }
-  public static string TypeName(ReflectedType type) { return TypeName(type.Type); }
-  public static string TypeName(Type type) { return Options.Current.Language.TypeName(type); }
-
+  #region Fields, privates
   public static readonly object Missing = new Singleton("<Missing>");
   public static readonly object FALSE=false, TRUE=true;
   public static readonly object[] EmptyArray = new object[0];
@@ -1661,6 +1694,7 @@ public sealed class Ops
       typeof(long), typeof(ulong)
     }
   };
+  #endregion
 }
 #endregion
 
