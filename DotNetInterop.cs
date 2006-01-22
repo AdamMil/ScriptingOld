@@ -269,7 +269,7 @@ public sealed class Interop
       cg.EmitCall(typeof(Ops), "ConvertTo", typeof(object), typeof(Type));
     }
 
-    if(Options.Current.Debug)
+    if(Options.Current.Debug && type!=typeof(object))
     { Slot tmp = cg.AllocLocalTemp(typeof(object));
       Label good = cg.ILG.DefineLabel();
 
@@ -390,11 +390,11 @@ public sealed class ReflectedEvent : IProcedure, IProperty
   public int MaxArgs { get { return raise==null ? -1 : raise.MaxArgs; } }
   public bool NeedsFreshArgs { get { return raise==null ? false : raise.NeedsFreshArgs; } }
 
-  public void Add(Delegate func)
+  public void Add(object func)
   { add.Call(isStatic ? new object[] { func } : new object[] { instance, func });
   }
 
-  public void Remove(Delegate func)
+  public void Remove(object func)
   { rem.Call(isStatic ? new object[] { func } : new object[] { instance, func });
   }
 
@@ -558,7 +558,7 @@ public sealed class ReflectedNamespace : MemberContainer
     }
     rns = top;
 
-    string ns=bits[0];
+    string ns = bits[0];
     for(int i=1; i<bits.Length; i++)
     { ns = ns+"."+bits[i];
       object member = rns.dict[bits[i]];
