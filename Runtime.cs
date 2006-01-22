@@ -4,7 +4,7 @@ It produces languages which can be interpreted or compiled, targetting
 the Microsoft .NET Framework.
 
 http://www.adammil.net/
-Copyright (C) 2005 Adam Milazzo
+Copyright (C) 2005-2006 Adam Milazzo
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -436,6 +436,35 @@ public abstract class Generator : IEnumerator
 }
 #endregion
 
+#region InstanceWrapper
+public sealed class InstanceWrapper : IProcedure
+{ public InstanceWrapper(object instance, IProcedure proc) { Instance=instance; Procedure=proc; }
+
+  public int MinArgs { get { return Math.Max(0, Procedure.MinArgs-1); } }
+
+  public int MaxArgs
+  { get
+    { int max = Procedure.MaxArgs;
+      return max==-1 ? -1 : Math.Max(0, max-1);
+    }
+  }
+
+  public bool NeedsFreshArgs { get { return false; } }
+  
+  public object Call(object[] args)
+  { object[] nargs = new object[args.Length+1];
+    nargs[0] = Instance;
+    if(args.Length!=0) args.CopyTo(nargs, 1);
+    return Procedure.Call(nargs);
+  }
+
+  public override string ToString() { return "#<method wrapper for "+Procedure.ToString()+">"; }
+
+  public readonly object Instance;
+  public readonly IProcedure Procedure;
+}
+#endregion
+
 #region IProperty
 public interface IProperty
 { bool Call(object instance, out object ret, params object[] args);
@@ -467,7 +496,7 @@ public abstract class MemberContainer
   public void DeleteSlot(object instance, string name)
   { if(!TryDeleteSlot(instance, name))
       throw new AttributeException(instance, name,
-                                   string.Format("can't delete attribute '{0}' on '{1}'", Ops.TypeName(instance), name));
+                                   string.Format("can't delete attribute '{0}' on '{1}'", name, Ops.TypeName(instance)));
   }
   public abstract bool TryDeleteSlot(object instance, string name);
 
@@ -478,7 +507,7 @@ public abstract class MemberContainer
   { object ret;
     if(!GetSlot(instance, name, out ret))
       throw new AttributeException(instance, name,
-                                   string.Format("can't get attribute '{0}' on '{1}'", Ops.TypeName(instance), name));
+                                   string.Format("can't get attribute '{0}' on '{1}'", name, Ops.TypeName(instance)));
     return ret;
   }
 
@@ -487,7 +516,7 @@ public abstract class MemberContainer
   public void SetSlot(object instance, string name, object value)
   { if(!TrySetSlot(instance, name, value))
       throw new AttributeException(instance, name,
-                                   string.Format("can't set attribute '{0}' on '{1}'", Ops.TypeName(instance), name));
+                                   string.Format("can't set attribute '{0}' on '{1}'", name, Ops.TypeName(instance)));
   }
 
   public abstract bool TrySetSlot(object instance, string name, object value);
@@ -496,7 +525,7 @@ public abstract class MemberContainer
   { IProcedure ret;
     if(!GetAccessor(instance, name, out ret))
       throw new AttributeException(instance, name,
-                                   string.Format("can't get accessor '{0}' on '{1}'", Ops.TypeName(instance), name));
+                                   string.Format("can't get accessor '{0}' on '{1}'", name, Ops.TypeName(instance)));
     return ret;
   }
 
@@ -515,7 +544,7 @@ public abstract class MemberContainer
   { object ret;
     if(!CallProperty(instance, name, out ret, args))
       throw new AttributeException(instance, name,
-                                   string.Format("can't call property '{0}' on '{1}'", Ops.TypeName(instance), name));
+                                   string.Format("can't call property '{0}' on '{1}'", name, Ops.TypeName(instance)));
     return ret;
   }
 
@@ -534,7 +563,7 @@ public abstract class MemberContainer
   { object ret;
     if(!CallProperty(instance, name, out ret, positional, names, values))
       throw new AttributeException(instance, name,
-                                   string.Format("can't call property '{0}' on '{1}'", Ops.TypeName(instance), name));
+                                   string.Format("can't call property '{0}' on '{1}'", name, Ops.TypeName(instance)));
     return ret;
   }
 
@@ -554,7 +583,7 @@ public abstract class MemberContainer
   { object ret;
     if(!GetProperty(instance, name, out ret))
       throw new AttributeException(instance, name,
-                                   string.Format("can't get property '{0}' on '{1}'", Ops.TypeName(instance), name));
+                                   string.Format("can't get property '{0}' on '{1}'", name, Ops.TypeName(instance)));
     return ret;
   }
 
@@ -567,7 +596,7 @@ public abstract class MemberContainer
   public void SetProperty(object instance, string name, object value)
   { if(!TrySetProperty(instance, name, value))
       throw new AttributeException(instance, name,
-                                   string.Format("can't set property '{0}' on '{1}'", Ops.TypeName(instance), name));
+                                   string.Format("can't set property '{0}' on '{1}'", name, Ops.TypeName(instance)));
   }
 
   public bool TrySetProperty(object instance, string name, object value)

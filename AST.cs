@@ -4,7 +4,7 @@ It produces languages which can be interpreted or compiled, targetting
 the Microsoft .NET Framework.
 
 http://www.adammil.net/
-Copyright (C) 2005 Adam Milazzo
+Copyright (C) 2005-2006 Adam Milazzo
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -435,6 +435,20 @@ public abstract class Language
     return true;
   }
   #endregion
+
+  public virtual bool IsConstant(object value)
+  { if(Convert.GetTypeCode(value)!=TypeCode.Object || value is string || value is Complex || value is Integer ||
+       value is Binding || value is string[])
+      return true;
+
+    object[] arr = value as object[];
+    if(arr==null && value is MultipleValues) arr = ((MultipleValues)value).Values;
+    if(arr!=null)
+    { foreach(object o in arr) if(!IsConstant(o)) return false;
+      return true;
+    }
+    return false;
+  }
 
   public virtual bool IsConstantFunction(string name) { return Array.BinarySearch(constants, name)>=0; }
   public virtual bool IsHashableConstant(object value) { return false; }
@@ -1042,12 +1056,7 @@ public abstract class Node
     set { if(value) Flags|=Flag.Tail; else Flags&=~Flag.Tail; }
   }
 
-  public void Emit(CodeGenerator cg)
-  { Type type = typeof(object);
-    Emit(cg, ref type);
-    if(type.IsValueType) cg.EmitConvertTo(typeof(object), type);
-  }
-
+  public void Emit(CodeGenerator cg) { EmitTyped(cg, typeof(object)); }
   public abstract void Emit(CodeGenerator cg, ref Type etype);
 
   public void EmitString(CodeGenerator cg) { EmitTyped(cg, typeof(string)); }
@@ -1056,11 +1065,14 @@ public abstract class Node
   { Type type = desired;
     Emit(cg, ref type);
     if(!AreEquivalent(type, desired))
-    { if(!desired.IsValueType) cg.ILG.Emit(OpCodes.Castclass, desired);
-      else
+    { if(desired.IsValueType && type==typeof(object))
       { cg.ILG.Emit(OpCodes.Unbox, desired);
         cg.EmitIndirectLoad(desired);
       }
+      else if(!type.IsValueType && !desired.IsValueType)
+      { if(!desired.IsAssignableFrom(type)) cg.ILG.Emit(OpCodes.Castclass, desired);
+      }
+      else cg.EmitConvertTo(desired, type);
     }
   }
 
@@ -1096,6 +1108,9 @@ public abstract class Node
     return conv!=Conversion.None && conv!=Conversion.Unsafe;
   }
 
+  public static bool AreConstant(Node n1, Node n2)
+  { return (n1==null || n1.IsConstant) && (n2!=null || n2.IsConstant);
+  }
   public static bool AreConstant(params Node[] nodes)
   { foreach(Node n in nodes) if(n!=null && !n.IsConstant) return false;
     return true;
@@ -1123,6 +1138,7 @@ public abstract class Node
     }
   }
 
+  public static bool HasInterrupt(Node n1, Node n2) { return n1!=null && n1.Interrupts || n2!=null && n2.Interrupts; }
   public static bool HasInterrupt(params Node[] nodes) { return HasInterrupt(nodes, 0, nodes.Length); }
   public static bool HasInterrupt(Node[] nodes, int start, int length)
   { for(int i=0; i<length; i++)
@@ -1132,6 +1148,7 @@ public abstract class Node
     return false;
   }
 
+  public static bool HasExcept(Node n1, Node n2) { return n1!=null && n1.ClearsStack || n2!=null && n2.ClearsStack; }
   public static bool HasExcept(params Node[] nodes)
   { if(nodes!=null) foreach(Node n in nodes) if(n!=null && n.ClearsStack) return true;
     return false;
@@ -1172,17 +1189,6 @@ public abstract class Node
     }
     else if(onStack==typeof(object)) etype = typeof(object);
     else etype = onStack;
-  }
-
-  protected static void EmitStrictConvert(CodeGenerator cg, Type onStack, Type destType)
-  { if(destType.IsAssignableFrom(onStack))
-    { if(onStack.IsValueType && !destType.IsValueType) cg.ILG.Emit(OpCodes.Box, onStack);
-    }
-    else if(destType.IsValueType==onStack.IsValueType)
-    { if(!onStack.IsValueType) cg.ILG.Emit(OpCodes.Castclass, destType);
-      else throw new NotImplementedException("Conversion between primitives"); // TODO: implement this
-    }
-    else throw new InvalidOperationException(string.Format("type mismatch: {0} and {1}", onStack, destType));
   }
 
   protected void TailReturn(CodeGenerator cg)
@@ -1431,6 +1437,21 @@ public abstract class CallNodeBase : Node
     return nodes;
   }
 
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    foreach(Argument a in Args) a.Expression.MarkTail(false);
+  }
+
+  public override void SetFlags()
+  { bool clears=false, interrupts=false;
+    foreach(Argument a in Args)
+    { if(a.Expression.ClearsStack) clears = true;
+      if(a.Expression.Interrupts)  interrupts = true;
+    }
+    ClearsStack = clears;
+    Interrupts  = interrupts;
+  }
+
   public Argument[] Args;
   
   protected void EmitCallArgs(CodeGenerator cg, Node[] nodes, params Slot[] emitBefore)
@@ -1612,7 +1633,7 @@ public abstract class CallNodeBase : Node
   protected void SetArgs(Argument[] args)
   { NumNamed = NumRuns = NumLists = NumDicts = 0;
     int runlen = 0;
-    foreach(Argument a in Args)
+    foreach(Argument a in args)
       switch(a.Type)
       { case ArgType.Normal:
           if(a.Name==null) runlen++;
@@ -1627,6 +1648,8 @@ public abstract class CallNodeBase : Node
     if(runlen!=0) NumRuns++;
     if(NumNamed!=0) NumRuns++;
     NumRuns += NumLists + NumDicts;
+    
+    Args = args;
   }
 
   protected int NumLists, NumDicts, NumRuns, NumNamed;
@@ -1840,9 +1863,8 @@ public sealed class CallNode : CallNodeBase
   }
 
   public override void MarkTail(bool tail)
-  { Tail = tail;
+  { base.MarkTail(tail);
     Function.MarkTail(false);
-    foreach(Argument a in Args) a.Expression.MarkTail(false);
   }
 
   public override void Optimize()
@@ -1853,13 +1875,9 @@ public sealed class CallNode : CallNodeBase
   }
 
   public override void SetFlags()
-  { bool clears=Function.ClearsStack, interrupts=Function.Interrupts;
-    foreach(Argument a in Args)
-    { if(a.Expression.ClearsStack) clears = true;
-      if(a.Expression.Interrupts) interrupts = true;
-    }
-    ClearsStack = clears;
-    Interrupts  = interrupts;
+  { base.SetFlags();
+    ClearsStack = ClearsStack | Function.ClearsStack;
+    Interrupts  = Interrupts  | Function.Interrupts;
   }
 
   public override void Walk(IWalker w)
@@ -2387,7 +2405,9 @@ public sealed class GetAccessorNode : Node
     Member.MarkTail(false);
   }
 
-  public override void Optimize() { IsConstant = AreConstant(Object, Member); }
+  public override void Optimize()
+  { IsConstant = AreConstant(Object, Member) && Options.Current.Language.IsConstant(Evaluate());
+  }
 
   public override void SetFlags()
   { ClearsStack = HasExcept(Object, Member);
@@ -2481,7 +2501,10 @@ public abstract class GetSlotBase : Node
     Member.MarkTail(false);
   }
 
-  public override void Optimize() { IsConstant = AreConstant(Object, Member); }
+  public override void Optimize()
+  { IsConstant = AreConstant(Object, Member);
+    if(IsConstant) IsConstant = Options.Current.Language.IsConstant(Evaluate());
+  }
 
   public override void SetFlags()
   { ClearsStack = HasExcept(Object, Member);
@@ -2534,6 +2557,29 @@ public abstract class SetSlotBase : Node
     if(IsProperty) Ops.SetProperty(value, obj, member);
     else Ops.SetSlot(value, obj, member);
     return null;
+  }
+
+  public override Type GetNodeType() { return typeof(void); }
+
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    Object.MarkTail(false);
+    Member.MarkTail(false);
+    Value.MarkTail(false);
+  }
+
+  public override void SetFlags()
+  { ClearsStack = HasExcept(Object, Member, Value);
+    Interrupts  = HasInterrupt(Object, Member, Value);
+  }
+
+  public override void Walk(IWalker w)
+  { if(w.Walk(this))
+    { Object.Walk(w);
+      Member.Walk(w);
+      Value.Walk(w);
+    }
+    w.PostWalk(this);
   }
 
   public readonly Node Object, Member, Value;
@@ -2631,7 +2677,30 @@ public sealed class CallPropertyNode : CallNodeBase
   }
 
   public override void MarkTail(bool tail)
-  { Tail = tail;
+  { base.MarkTail(tail);
+    Object.MarkTail(false);
+    Member.MarkTail(false);
+  }
+
+  public override void Optimize()
+  { IsConstant = AreConstant(Object, Member);
+    foreach(Argument a in Args) if(!a.Expression.IsConstant) { IsConstant=false; break; }
+    if(IsConstant) IsConstant = Options.Current.Language.IsConstant(Evaluate());
+  }
+
+  public override void SetFlags()
+  { base.SetFlags();
+    ClearsStack = ClearsStack | Object.ClearsStack | Member.ClearsStack;
+    Interrupts  = Interrupts  | Object.Interrupts  | Member.Interrupts;
+  }
+
+  public override void Walk(IWalker w)
+  { if(w.Walk(this))
+    { Object.Walk(w);
+      Member.Walk(w);
+      foreach(Argument a in Args) a.Expression.Walk(w);
+    }
+    w.PostWalk(this);
   }
 
   public readonly Node Object, Member;
@@ -3263,7 +3332,7 @@ public class SetNode : SetNodeBase
   { if(lhs is VariableNode)
     { VariableNode vn = (VariableNode)lhs;
       if(Type==SetType.Alter || vn.Name.Depth!=Name.Global)
-      { EmitStrictConvert(cg, onStack, vn.GetNodeType()); // TODO: why not use cg.EmitConvertTo() ?
+      { cg.EmitConvertTo(vn.GetNodeType(), onStack);
         cg.EmitSet(vn.Name);
       }
       else

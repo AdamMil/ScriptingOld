@@ -4,7 +4,7 @@ It produces languages which can be interpreted or compiled, targetting
 the Microsoft .NET Framework.
 
 http://www.adammil.net/
-Copyright (C) 2005 Adam Milazzo
+Copyright (C) 2005-2006 Adam Milazzo
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -26,40 +26,41 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Reflection.Emit;
 
-// TODO: implement a system by which the names of members can be controlled, or exposed in a consistent and
-// unambiguous manner so other languages can determine and control the mapping of names to actual member names
-
 namespace Scripting
 {
 
 #region FieldWrapper
-public abstract class FieldWrapper : IProcedure/*, IProperty*/
-{ public FieldWrapper(string name) { Name=name; }
-
-  public int MinArgs { get { return 1; } }
-  public int MaxArgs { get { return 2; } }
-  public bool NeedsFreshArgs { get { return false; } }
-
-  public abstract object Call(object[] args);
-  public override string ToString() { return "#<field '"+Name+"'>"; }
-
-  /*#region IProperty
-  public abstract object Get(object[] args);
-  public abstract object Set(object[] args, object value);
-  #endregion*/
-
-  public string Name;
+public abstract class FieldWrapper : SimpleProcedure
+{ public FieldWrapper(string name, bool isStatic) : base("#<field '"+name+"'>", isStatic ? 0 : 1, isStatic ? 1 : 2) { }
 }
 #endregion
 
 #region FunctionWrapper
-public abstract class FunctionWrapper : IProcedure
+public abstract class FunctionWrapper : IProcedure, IProperty
 { public abstract int MinArgs { get; }
   public abstract int MaxArgs { get; }
   public bool NeedsFreshArgs { get { return false; } }
 
   public abstract object Call(object[] args);
   public abstract Conversion TryMatch(object[] args, Type[] types);
+
+  #region IProperty Members
+  public bool Call(object instance, out object ret, params object[] args) { ret=Call(args); return true; }
+
+  public bool Call(object instance, out object ret, object[] positional, string[] names, object[] values)
+  { throw new NotImplementedException("fancy calling .NET methods is not implemented");
+  }
+
+  public bool Get(object instance, out object ret)
+  { ret = isStatic || instance==null ? (IProcedure)this : new InstanceWrapper(instance, this);
+    return true;
+  }
+
+  public bool GetAccessor(object instance, out IProcedure ret) { ret=this; return true; }
+  public bool TrySet(object instance, object value) { return false; }
+  #endregion
+
+  protected bool isStatic;
 
   // TODO: see if we can optimize this even further?
   protected static Conversion TryMatch(object[] args, Type[] types, Type[] ptypes, int numNP, int min, bool paramArray)
@@ -108,32 +109,265 @@ public abstract class FunctionWrapper : IProcedure
 }
 
 public abstract class FunctionWrapperI : FunctionWrapper
-{ public FunctionWrapperI(IntPtr method) { methodPtr=method; }
+{ public FunctionWrapperI(IntPtr method, bool isStatic) { methodPtr=method; this.isStatic=isStatic; }
   protected readonly IntPtr methodPtr;
 }
 #endregion
 
-#region StructCreator
-public abstract class StructCreator : FunctionWrapper
-{ public override int MaxArgs { get { return 0; } }
-  public override int MinArgs { get { return 0; } }
-  public override Conversion TryMatch(object[] args, Type[] types)
-  { return TryMatch(args, types, Type.EmptyTypes, 0, 0, false);
+#region Interop
+public sealed class Interop
+{ Interop() { }
+
+  #region Call
+  public static object Call(FunctionWrapper[] funcs, object[] args)
+  { if(funcs.Length==1) return funcs[0].Call(args);
+
+    Conversion best=Conversion.None, bqual=Conversion.None;
+    int besti=-1;
+
+    Type[] types = new Type[args.Length];
+    for(int i=0; i<args.Length; i++)
+    { object o = args[i];
+      if(o==null) types[i] = null;
+      else
+      { Type type = o.GetType();
+        if(type==Cast.ClassType)
+        { Cast cast = (Cast)o;
+          args[i]  = cast.Value;
+          types[i] = cast.Type;
+        }
+        else types[i] = type;
+      }
+    }
+
+    unsafe
+    { Conversion *rets = stackalloc Conversion[funcs.Length];
+
+      for(int i=0; i<funcs.Length; i++)
+      { Conversion conv = funcs[i].TryMatch(args, types), qual=conv&Conversion.QualityMask;
+        if(qual>bqual || qual==bqual && (conv>best && (best&Conversion.PacksPA)!=0 ||
+                                         conv<best && (conv&Conversion.PacksPA)==0))
+        { best=conv; bqual=qual; besti=i;
+          if(bqual==Conversion.Identity) break; // this complements the check down below
+        }
+        rets[i] = conv;
+      }
+
+      if(besti==-1) throw new ArgumentException("Unable to bind arguments");
+      if(bqual!=Conversion.Identity)
+        for(int i=besti+1; i<funcs.Length; i++)
+          if(rets[i]==best) throw new ArgumentException("Ambiguous arguments");
+    }
+
+    return funcs[besti].Call(args);
   }
+  #endregion
+
+  public static Type GetType(string name) { return GetType(name, false); }
+  public static Type GetType(string name, bool throwOnError)
+  { Type type = Type.GetType(name);
+    if(type==null)
+      foreach(Assembly a in AppDomain.CurrentDomain.GetAssemblies())
+      { type = a.GetType(name);
+        if(type!=null) break;
+      }
+    if(type==null && throwOnError) throw new ArgumentException("Unable to load type: "+name, "name");
+    return type;
+  }
+
+  static void LoadAssembly(Assembly ass)
+  { Hashtable namespaces = new Hashtable();
+    foreach(Type type in ass.GetTypes())
+    { if(!type.IsPublic || type.DeclaringType!=null || type.Namespace==null) continue;
+      ArrayList list = (ArrayList)namespaces[type.Namespace];
+      if(list==null) namespaces[type.Namespace] = list = new ArrayList();
+      list.Add(type);
+    }
+    foreach(DictionaryEntry de in namespaces)
+    { ReflectedNamespace ns = ReflectedNamespace.FromName((string)de.Key);
+      foreach(Type type in (ArrayList)de.Value) ns.AddType(type);
+    }
+  }
+
+  public static void LoadAssemblyByName(string name)
+  { Assembly ass = Assembly.LoadWithPartialName(name);
+    if(ass==null) throw new ArgumentException("Assembly "+name+" could not be loaded");
+    LoadAssembly(ass);
+  }
+
+  public static void LoadAssemblyFromFile(string name) { LoadAssembly(Assembly.LoadFrom(name)); }
+
+  #region MakeDelegateWrapper
+  public static object MakeDelegateWrapper(IProcedure proc, Type delegateType)
+  { Create cr;
+    lock(handlers) cr = (Create)handlers[delegateType];
+
+    if(cr==null)
+    { MethodInfo mi = delegateType.GetMethod("Invoke", BindingFlags.Public|BindingFlags.Instance);
+      Signature sig = new Signature(mi, true);
+
+      lock(dsigs)
+      { cr = (Create)dsigs[sig];
+        if(cr==null)
+        { for(int i=0; i<sig.Params.Length; i++)
+            if(sig.Params[i].IsByRef) throw new NotImplementedException(); // TODO: implement this
+          TypeGenerator tg = SnippetMaker.Assembly.DefineType(TypeAttributes.Public|TypeAttributes.Sealed,
+                                                              "dw$"+dwi.Next, null);
+          Slot pslot = tg.DefineField(FieldAttributes.Private, "proc", typeof(IProcedure));
+
+          CodeGenerator cg = tg.DefineConstructor(typeof(IProcedure));
+          cg.EmitArgGet(0);
+          pslot.EmitSet(cg);
+          cg.EmitReturn();
+          cg.Finish();
+          ConstructorInfo cons = (ConstructorInfo)cg.MethodBase;
+
+          cg = tg.DefineMethod("Handle", sig.Return, sig.Params);
+          pslot.EmitGet(cg);
+          if(sig.Params.Length==0) cg.EmitFieldGet(typeof(Ops), "EmptyArray");
+          else
+          { cg.EmitNewArray(typeof(object), sig.Params.Length);
+            for(int i=0; i<sig.Params.Length; i++)
+            { cg.Dup();
+              cg.EmitInt(i);
+              cg.EmitArgGet(i);
+              if(sig.Params[i].IsValueType) cg.ILG.Emit(OpCodes.Box, sig.Params[i]);
+              cg.ILG.Emit(OpCodes.Stelem_Ref);
+            }
+            if(sig.Return==typeof(object)) cg.ILG.Emit(OpCodes.Tailcall);
+            cg.EmitCall(typeof(IProcedure), "Call");
+            if(sig.Return==typeof(void)) cg.ILG.Emit(OpCodes.Pop);
+            else EmitConvertTo(cg, sig.Return);
+            cg.EmitReturn();
+            cg.Finish();
+          }
+
+          cg = tg.DefineStaticMethod("Create", typeof(object), typeof(IProcedure));
+          cg.EmitArgGet(0);
+          cg.EmitNew(cons);
+          cg.EmitReturn();
+          cg.Finish();
+
+          Type type = tg.FinishType();
+          dsigs[sig] = cr = (Create)Delegate.CreateDelegate(typeof(Create), type.GetMethod("Create"));
+        }
+      }
+
+      lock(handlers) handlers[delegateType] = cr;
+    }
+
+    return cr(proc);
+  }
+  #endregion
+
+  internal static void EmitConvertTo(CodeGenerator cg, Type type) { EmitConvertTo(cg, type, false); }
+  internal static void EmitConvertTo(CodeGenerator cg, Type type, bool useIndirect)
+  { if(type==typeof(void)) throw new ArgumentException("Can't convert to void!");
+
+    if(type.IsValueType || type.IsSubclassOf(typeof(Delegate))) // TODO: be sure to handle all special object types
+    { cg.EmitTypeOf(type);
+      cg.EmitCall(typeof(Ops), "ConvertTo", typeof(object), typeof(Type));
+    }
+
+    if(Options.Current.Debug)
+    { Slot tmp = cg.AllocLocalTemp(typeof(object));
+      Label good = cg.ILG.DefineLabel();
+
+      cg.Dup();
+      tmp.EmitSet(cg);
+      cg.ILG.Emit(OpCodes.Isinst, type);
+      cg.ILG.Emit(OpCodes.Brtrue_S, good);
+      if(!type.IsValueType)
+      { tmp.EmitGet(cg);
+        cg.ILG.Emit(OpCodes.Brfalse_S, good); // null reference types are okay
+      }
+      cg.EmitString("expected argument of type "+Ops.TypeName(type)+", but received ");
+      tmp.EmitGet(cg);
+      cg.EmitCall(typeof(Ops), "TypeName", typeof(object));
+      cg.EmitCall(typeof(string), "Concat", typeof(string), typeof(string));
+      cg.EmitNew(typeof(ArgumentException), typeof(string));
+      cg.ILG.Emit(OpCodes.Throw);
+      cg.ILG.MarkLabel(good);
+      tmp.EmitGet(cg);
+
+      cg.FreeLocalTemp(tmp);
+    }
+
+    if(type.IsValueType)
+    { cg.ILG.Emit(OpCodes.Unbox, type);
+      if(!useIndirect) cg.EmitIndirectLoad(type);
+    }
+    else if(type!=typeof(object)) cg.ILG.Emit(OpCodes.Castclass, type);
+  }
+
+  internal static void LoadStandardAssemblies()
+  { if(!loadedStandard)
+    { loadedStandard = true;
+      LoadAssemblyByName("mscorlib");
+      LoadAssemblyByName("System");
+    }
+  }
+
+  delegate object Create(IProcedure proc);
+
+  static readonly Hashtable handlers=new Hashtable(), dsigs=new Hashtable();
+  static readonly Index dwi=new Index();
+  static bool loadedStandard;
+}
+#endregion
+
+#region ReflectedConstructor
+public sealed class ReflectedConstructor : SimpleProcedure, IProperty
+{ public ReflectedConstructor(Type type, IProcedure proc)
+    : base("#<constructor '"+type.FullName+"'>", 0, -1) { this.proc = proc; }
+
+  #region IProperty Members
+  public bool Call(object instance, out object ret, params object[] args)
+  { ret = proc.Call(args);
+    return true;
+  }
+
+  public bool Call(object instance, out object ret, object[] positional, string[] names, object[] values)
+  { throw new NotImplementedException("fancy calling .NET methods is not implemented");
+  }
+
+  public bool Get(object instance, out object ret) { ret=proc; return true; }
+  public bool GetAccessor(object instance, out IProcedure ret) { ret=proc; return true; }
+  public bool TrySet(object instance, object value) { return false; }
+  #endregion
+
+  public override object Call(object[] args) { return proc.Call(args); }
+
+  readonly IProcedure proc;
 }
 #endregion
 
 #region ReflectedConstructors
-public sealed class ReflectedConstructors : SimpleProcedure
-{ public ReflectedConstructors(Type type) : base("#<constructor '"+type.FullName+"'>", 0, -1)
-  { this.type=type;
+public sealed class ReflectedConstructors : SimpleProcedure, IProperty
+{ public ReflectedConstructors(Type type) : base("#<constructor '"+type.FullName+"'>", 0, -1) { this.type = type; }
+
+  #region IProperty Members
+  public bool Call(object instance, out object ret, params object[] args)
+  { ret = CallCore(args);
+    return true;
   }
 
-  public override object Call(object[] args)
+  public bool Call(object instance, out object ret, object[] positional, string[] names, object[] values)
+  { throw new NotImplementedException("fancy calling .NET methods is not implemented");
+  }
+
+  public bool Get(object instance, out object ret) { ret=this; return true; }
+  public bool GetAccessor(object instance, out IProcedure ret) { ret=this; return true; }
+  public bool TrySet(object instance, object value) { return false; }
+  #endregion
+
+  public override object Call(object[] args) { return CallCore(args); }
+
+  object CallCore(object[] args)
   { if(funcs==null)
       lock(this)
       { funcs = ReflectedType.GetConstructors(type);
-        type = null;
+        type  = null;
       }
     return Interop.Call(funcs, args);
   }
@@ -143,13 +377,130 @@ public sealed class ReflectedConstructors : SimpleProcedure
 }
 #endregion
 
-#region ReflectedFunctions
-public sealed class ReflectedFunctions : SimpleProcedure
-{ public ReflectedFunctions(MethodInfo[] mis, string name) : base("#<method '"+name+"'>", 0, -1)
-  { methods = mis;
+#region ReflectedEvent
+public sealed class ReflectedEvent : IProcedure, IProperty
+{ public ReflectedEvent(IProcedure add, IProcedure rem, IProcedure raise, string name, bool isStatic)
+  { this.add=add; this.rem=rem; this.raise=raise; this.name=name; this.isStatic=isStatic;
+  }
+  public ReflectedEvent(ReflectedEvent re, object instance) // assumed to be non-static
+  { add=re.add; rem=re.rem; raise=re.raise; name=re.name; this.instance=instance;
   }
 
-  public override object Call(object[] args)
+  public int MinArgs { get { return raise==null ? 0 : raise.MinArgs; } }
+  public int MaxArgs { get { return raise==null ? -1 : raise.MaxArgs; } }
+  public bool NeedsFreshArgs { get { return raise==null ? false : raise.NeedsFreshArgs; } }
+
+  public void Add(Delegate func)
+  { add.Call(isStatic ? new object[] { func } : new object[] { instance, func });
+  }
+
+  public void Remove(Delegate func)
+  { rem.Call(isStatic ? new object[] { func } : new object[] { instance, func });
+  }
+
+  public object Call(object[] args)
+  { if(raise==null) throw new NotSupportedException("this event cannot be raised directly");
+    return raise.Call(args);
+  }
+
+  #region IProperty Members
+  public bool Call(object instance, out object ret, params object[] args)
+  { if(raise==null) { ret=null; return false; }
+    else { ret=raise.Call(args); return true; }
+  }
+
+  public bool Call(object instance, out object ret, object[] positional, string[] names, object[] values)
+  { throw new NotImplementedException("fancy calling .NET methods is not implemented");
+  }
+
+  public bool Get(object instance, out object ret)
+  { ret = isStatic || instance==null ? this : new ReflectedEvent(this, instance);
+    return true;
+  }
+
+  public bool GetAccessor(object instance, out IProcedure ret)
+  { ret = new MemberContainer.SlotAccessor(name);
+    return true;
+  }
+
+  public bool TrySet(object instance, object value) { return false; }
+  #endregion
+
+  public override string ToString() { return "#<event '"+name+"'>"; }
+
+  readonly IProcedure add, rem, raise;
+  readonly object instance;
+  readonly string name;
+  readonly bool isStatic;
+}
+#endregion
+
+#region ReflectedField
+public sealed class ReflectedField : SimpleProcedure, IProperty
+{ public ReflectedField(IProcedure proc, string name, bool isStatic, bool readOnly)
+    : base("#<field '"+name+"'>", isStatic ? 0 : 1, isStatic ? 1 : 2)
+  { this.proc=proc; this.isStatic=isStatic; this.readOnly=readOnly;
+  }
+
+  public override object Call(object[] args) { return proc.Call(args); }
+
+  #region IProperty Members
+  public bool Call(object instance, out object ret, params object[] args) { ret=proc.Call(args); return true; }
+
+  public bool Call(object instance, out object ret, object[] positional, string[] names, object[] values)
+  { throw new NotImplementedException("fancy calling .NET methods is not implemented");
+  }
+
+  public bool Get(object instance, out object ret)
+  { ret = proc.Call(isStatic ? Ops.EmptyArray : new object[] { instance });
+    return true;
+  }
+
+  public bool GetAccessor(object instance, out IProcedure ret) { ret=proc; return true; }
+
+  public bool TrySet(object instance, object value)
+  { if(readOnly) return false;
+    proc.Call(isStatic ? new object[] { value } : new object[] { instance, value });
+    return true;
+  }
+  #endregion
+
+  readonly IProcedure proc;
+  readonly bool isStatic, readOnly;
+}
+#endregion
+
+#region ReflectedFunctions
+public sealed class ReflectedFunctions : SimpleProcedure, IProperty
+{ // TODO: calculate a rough min/max from 'mis'
+  public ReflectedFunctions(MethodInfo[] mis, string name) : base("#<method '"+name+"'>", 0, -1)
+  { methods  = mis;
+    isStatic = true;
+    foreach(MethodInfo mi in mis) if(!mi.IsStatic) { isStatic=false; break; }
+  }
+
+  #region IProperty Members
+  public bool Call(object instance, out object ret, params object[] args)
+  { ret = CallCore(args);
+    return true;
+  }
+
+  public bool Call(object instance, out object ret, object[] positional, string[] names, object[] values)
+  { throw new NotImplementedException("fancy calling .NET methods is not implemented");
+  }
+
+  public bool Get(object instance, out object ret)
+  { ret = isStatic || instance==null ? (IProcedure)this : new InstanceWrapper(instance, this);
+    return true;
+  }
+
+  public bool GetAccessor(object instance, out IProcedure ret) { ret=this; return true; }
+  public bool TrySet(object instance, object value) { return false; }
+  #endregion
+
+  public override object Call(object[] args) { return CallCore(args); }
+
+  object CallCore(object[] args)
   { if(funcs==null)
       lock(this)
       { funcs = new FunctionWrapper[methods.Length];
@@ -161,6 +512,7 @@ public sealed class ReflectedFunctions : SimpleProcedure
 
   FunctionWrapper[] funcs;
   MethodInfo[] methods;
+  readonly bool isStatic;
 }
 #endregion
 
@@ -226,6 +578,50 @@ public sealed class ReflectedNamespace : MemberContainer
   Hashtable dict;
 
   static SortedList cache = new SortedList();
+}
+#endregion
+
+#region ReflectedProperty
+public sealed class ReflectedProperty : SimpleProcedure, IProperty
+{ public ReflectedProperty(IProcedure get, IProcedure set, string name, int numParams, bool isStatic)
+    : base("#<property '"+name+"'>", numParams+(isStatic ? 0 : 1), numParams+(isStatic ? 1 : 2))
+  { this.get=get; this.set=set; this.isStatic=isStatic;
+  }
+
+  public override object Call(params object[] args)
+  { IProcedure proc = args.Length>min ? set : get;
+    if(proc==null) throw new InvalidOperationException("this property cannot be "+(args.Length>min ? "set" : "read"));
+    return proc.Call(args);
+  }
+
+  #region IProperty Members
+  public bool Call(object instance, out object ret, params object[] args)
+  { IProcedure proc = args.Length>min ? set : get;
+    if(proc==null) { ret=null; return false; }
+    else { ret=proc.Call(args); return true; }
+  }
+
+  public bool Call(object instance, out object ret, object[] positional, string[] names, object[] values)
+  { throw new NotImplementedException("fancy calling .NET methods is not implemented");
+  }
+
+  public bool Get(object instance, out object ret)
+  { if(get==null || min!=(isStatic ? 0 : 1)) { ret=null; return false; }
+    ret = get.Call(isStatic ? Ops.EmptyArray : new object[] { instance });
+    return true;
+  }
+
+  public bool GetAccessor(object instance, out IProcedure ret) { ret=this; return true; }
+
+  public bool TrySet(object instance, object value)
+  { if(set==null || min!=(isStatic ? 0 : 1)) return false;
+    set.Call(isStatic ? new object[] { value } : new object[] { instance, value });
+    return true;
+  }
+  #endregion
+
+  readonly IProcedure get, set;
+  readonly bool isStatic;
 }
 #endregion
 
@@ -336,23 +732,15 @@ public sealed class ReflectedType : MemberContainer, IProcedure
   }
 
   sealed class Properties : IDisposable
-  { public Properties(Type type) { Gets=CachedArray.Alloc(); Sets=CachedArray.Alloc(); Type=type; }
-    public CachedArray Gets, Sets;
+  { public Properties(Type type, int numParams)
+    { Gets=CachedArray.Alloc(); Sets=CachedArray.Alloc(); Type=type; NumParams=numParams;
+    }
+
+    public readonly CachedArray Gets, Sets;
     public Type Type;
+    public readonly int NumParams;
     
     public void Dispose() { Gets.Dispose(); Sets.Dispose(); }
-  }
-
-  struct Event
-  { public Event(EventInfo ei)
-    { DeclaringType=ei.DeclaringType; Name=GetMemberName(ei); Add=ei.GetAddMethod(); Rem=ei.GetRemoveMethod();
-    }
-    public Event(Type type, string name, MethodInfo add, MethodInfo rem)
-    { DeclaringType=type; Name=name; Add=add; Rem=rem;
-    }
-    public Type DeclaringType;
-    public string Name;
-    public MethodInfo Add, Rem;
   }
 
   #region Initialize
@@ -364,49 +752,37 @@ public sealed class ReflectedType : MemberContainer, IProcedure
     if(!includeInherited) flags |= BindingFlags.DeclaredOnly;
 
     // TODO: handle certain types specially. eg, delegates, arrays, enums, ...?
-    // TODO: add [] for arrays
-    // TODO: add the values for the names more lazily, if possible (don't do any compilation until necessary)
+    // TODO: don't do any compilation until necessary
     // TODO: speed this up!
 
     if(!Type.IsPrimitive) // add constructors
     { ConstructorInfo[] ci = Type.GetConstructors();
-      bool needDefault = Type.IsValueType && !Type.IsPrimitive;
+      bool needDefault = Type.IsValueType && !Type.IsPrimitive; // TODO: should we support primitive constructors?
       if(ci.Length!=0 || needDefault)
         dict[Type.Name] = Constructor =
-          ci.Length+(needDefault ? 1 : 0) != 1 ? (IProcedure)new ReflectedConstructors(Type)
-                                               : needDefault ? MakeStructCreator(Type) : MakeFunctionWrapper(ci[0]);
+          ci.Length+(needDefault ? 1 : 0) == 1
+            ? new ReflectedConstructor(Type, needDefault ? MakeStructCreator(Type) : MakeFunctionWrapper(ci[0]))
+            : (IProcedure)new ReflectedConstructors(Type);
     }
 
     // add events
     foreach(EventInfo ei in Type.GetEvents(flags))
-    { string name=GetMemberName(ei), add="add/"+name, rem="rem/"+name;
-      if(ei.DeclaringType!=Type)
-      { IDictionary dec = FromType(ei.DeclaringType).Dict;
-        dict[add] = dec[add];
-        dict[rem] = dec[rem];
-      }
+    { string name = GetMemberName(ei);
+      if(ei.DeclaringType!=Type) dict[name] = FromType(ei.DeclaringType).Dict[name];
       else
-      { dict[add] = MakeFunctionWrapper(ei.GetAddMethod());
-        dict[rem] = MakeFunctionWrapper(ei.GetRemoveMethod());
+      { MethodInfo mi = ei.GetAddMethod();
+        bool isStatic = mi.IsStatic;
+        IProcedure add=MakeFunctionWrapper(mi), rem=MakeFunctionWrapper(ei.GetRemoveMethod());
+        dict[name] = new ReflectedEvent(add, rem, mi==null ? null : MakeFunctionWrapper(mi), name, isStatic);
       }
-
-      MethodInfo mi = ei.GetRaiseMethod(true);
-      if(mi!=null) dict["raise/"+name] = MakeFunctionWrapper(mi);
     }
 
     // add fields
     foreach(FieldInfo fi in Type.GetFields(flags))
-    { string name=GetMemberName(fi), get=name, set="set/"+name;
-      bool readOnly = fi.IsInitOnly || fi.IsLiteral;
-      if(fi.DeclaringType!=Type)
-      { IDictionary dec = FromType(fi.DeclaringType).Dict;
-        dict[get] = dec[get];
-        if(!readOnly) dict[set] = dec[set];
-      }
-      else
-      { dict[get] = MakeGetWrapper(fi);
-        if(!readOnly) dict[set] = MakeSetWrapper(fi);
-      }
+    { string name = GetMemberName(fi);
+      dict[name] = fi.DeclaringType==Type
+        ? new ReflectedField(MakeFieldWrapper(fi), name, fi.IsStatic, fi.IsInitOnly || fi.IsLiteral)
+        : FromType(fi.DeclaringType).Dict[name];
     }
 
     // add properties
@@ -418,26 +794,25 @@ public sealed class ReflectedType : MemberContainer, IProcedure
 
       Properties ps = (Properties)overloads[name];
       Type declaringType = MostDerived(get, set);
-      if(ps==null) overloads[name] = ps = new Properties(declaringType);
+      if(ps==null) overloads[name] = ps = new Properties(declaringType, pi.GetIndexParameters().Length);
       else if(declaringType.IsSubclassOf(ps.Type)) ps.Type = declaringType;
       if(get!=null) ps.Gets.Add(get);
       if(set!=null) ps.Sets.Add(set);
     }
+
     foreach(DictionaryEntry de in overloads)
-    { string get=(string)de.Key, set="set/"+(string)de.Key;
+    { string name = (string)de.Key;
       Properties ps = (Properties)de.Value;
-      if(ps.Type!=Type)
-      { IDictionary dec = FromType(ps.Type).Dict;
-        if(ps.Gets.Count!=0) dict[get] = dec[get];
-        if(ps.Sets.Count!=0) dict[set] = dec[set];
-      }
+      if(ps.Type!=Type) dict[name] = FromType(ps.Type).Dict[name];
       else
-      { if(ps.Gets.Count!=0)
-          dict[get] = ps.Gets.Count==1 ? (object)MakeFunctionWrapper((MethodInfo)ps.Gets[0])
-                        : new ReflectedFunctions((MethodInfo[])ps.Gets.ToArray(typeof(MethodInfo)), get);
-        if(ps.Sets.Count!=0)
-          dict[set] = ps.Sets.Count==1 ? (object)MakeFunctionWrapper((MethodInfo)ps.Sets[0])
-                        : new ReflectedFunctions((MethodInfo[])ps.Sets.ToArray(typeof(MethodInfo)), set);
+      { IProcedure get = ps.Gets.Count==0 ? null
+                           : ps.Gets.Count==1 ? (IProcedure)MakeFunctionWrapper((MethodInfo)ps.Gets[0])
+                           : new ReflectedFunctions((MethodInfo[])ps.Gets.ToArray(typeof(MethodInfo)), "get_"+name);
+        IProcedure set = ps.Sets.Count==0 ? null
+                           : ps.Sets.Count==1 ? (IProcedure)MakeFunctionWrapper((MethodInfo)ps.Sets[0])
+                           : new ReflectedFunctions((MethodInfo[])ps.Sets.ToArray(typeof(MethodInfo)), "set_"+name);
+        bool isStatic = ((MethodInfo)(ps.Gets.Count==0 ? ps.Sets : ps.Gets)[0]).IsStatic;
+        dict[name] = new ReflectedProperty(get, set, name, ps.NumParams, isStatic);
       }
       ps.Dispose();
     }
@@ -456,8 +831,8 @@ public sealed class ReflectedType : MemberContainer, IProcedure
     foreach(DictionaryEntry de in overloads)
     { Methods ov = (Methods)de.Value;
       dict[de.Key] = ov.Type!=Type    ? FromType(ov.Type).Dict[de.Key] :
-                     ov.List.Count==1 ? (object)MakeFunctionWrapper((MethodInfo)ov.List[0]) :
-                     new ReflectedFunctions((MethodInfo[])ov.List.ToArray(typeof(MethodInfo)), (string)de.Key);
+                     ov.List.Count==1 ? (IProcedure)MakeFunctionWrapper((MethodInfo)ov.List[0])
+                       : new ReflectedFunctions((MethodInfo[])ov.List.ToArray(typeof(MethodInfo)), (string)de.Key);
       ov.Dispose();
     }
 
@@ -501,20 +876,23 @@ public sealed class ReflectedType : MemberContainer, IProcedure
     else return f2.DeclaringType;
   }
 
-  #region MakeFunctionWrapper
-  internal static FunctionWrapper MakeFunctionWrapper(MethodBase mi)
-  { bool isCons = mi is ConstructorInfo;
-    return (FunctionWrapper)MakeSignatureWrapper(mi)
-            .GetConstructor(isCons ? Type.EmptyTypes : new Type[] { typeof(IntPtr) })
-            .Invoke(isCons ? Ops.EmptyArray : new object[] { mi.MethodHandle.GetFunctionPointer() });
-  }
-  #endregion
-
-  #region MakeGetWrapper
-  static FieldWrapper MakeGetWrapper(FieldInfo fi)
+  #region MakeFieldWrapper
+  static FieldWrapper MakeFieldWrapper(FieldInfo fi)
   { TypeGenerator tg = SnippetMaker.Assembly.DefineType(TypeAttributes.Public|TypeAttributes.Sealed,
-                                                        "fg"+fwi.Next+"$"+fi.Name, typeof(FieldWrapper));
+                                                        "fw"+fwi.Next+"$"+fi.Name, typeof(FieldWrapper));
     CodeGenerator cg = tg.DefineMethodOverride("Call", true);
+    Label set;
+    bool readOnly = fi.IsInitOnly || fi.IsLiteral;
+
+    if(readOnly) set = cg.ILG.DefineLabel();
+    else
+    { set = cg.ILG.DefineLabel();
+      cg.EmitArgGet(0);
+      cg.ILG.Emit(OpCodes.Ldlen);
+      cg.EmitInt(fi.IsStatic ? 1 : 2);
+      cg.ILG.Emit(OpCodes.Beq_S, set);
+    }
+
     if(!fi.IsStatic)
     { if(Options.Current.Debug)
       { Label good = cg.ILG.DefineLabel();
@@ -523,7 +901,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
         cg.EmitInt(1);
         cg.ILG.Emit(OpCodes.Bge_S, good);
         cg.EmitString("non-static field getter expects 1 argument");
-        cg.EmitNew(typeof(TargetParameterCountException), typeof(string));
+        cg.EmitNew(typeof(ArgumentException), typeof(string));
         cg.ILG.Emit(OpCodes.Throw);
         cg.ILG.MarkLabel(good);
       }
@@ -536,71 +914,52 @@ public sealed class ReflectedType : MemberContainer, IProcedure
     cg.EmitFieldGet(fi.DeclaringType, fi.Name);
     if(fi.FieldType.IsValueType) cg.ILG.Emit(OpCodes.Box, fi.FieldType);
     cg.EmitReturn();
+
+    if(!readOnly)
+    { cg.ILG.MarkLabel(set);
+      if(!fi.IsStatic)
+      { cg.EmitArgGet(0);
+        cg.EmitInt(0);
+        cg.ILG.Emit(OpCodes.Ldelem_Ref);
+        if(fi.DeclaringType != typeof(object))
+          cg.ILG.Emit(fi.DeclaringType.IsValueType ? OpCodes.Unbox : OpCodes.Castclass, fi.DeclaringType);
+      }
+
+      cg.EmitArgGet(0);
+      cg.EmitInt(fi.IsStatic ? 0 : 1);
+      cg.ILG.Emit(OpCodes.Ldelem_Ref);
+      if(UsesIndirectCopy(fi.FieldType))
+      { cg.EmitFieldGetAddr(fi.DeclaringType, fi.Name);
+        Interop.EmitConvertTo(cg, fi.FieldType, true);
+        cg.ILG.Emit(OpCodes.Cpobj, fi.FieldType);
+      }
+      else
+      { Interop.EmitConvertTo(cg, fi.FieldType);
+        cg.EmitFieldSet(fi.DeclaringType, fi.Name);
+      }
+      cg.EmitNull();
+      cg.EmitReturn();
+    }
     cg.Finish();
 
     cg = tg.DefineConstructor(Type.EmptyTypes);
     cg.EmitThis();
     cg.EmitString(fi.IsStatic ? fi.DeclaringType.FullName+"."+fi.Name : fi.Name);
-    cg.EmitCall(typeof(FieldWrapper).GetConstructor(new Type[] { typeof(string) }));
+    cg.EmitBool(fi.IsStatic);
+    cg.EmitCall(typeof(FieldWrapper).GetConstructor(new Type[] { typeof(string), typeof(bool) }));
     cg.EmitReturn();
     cg.Finish();
 
     return (FieldWrapper)tg.FinishType().GetConstructor(Type.EmptyTypes).Invoke(null);
   }
   #endregion
-
-  #region MakeSetWrapper
-  static FieldWrapper MakeSetWrapper(FieldInfo fi)
-  { TypeGenerator tg = SnippetMaker.Assembly.DefineType(TypeAttributes.Public|TypeAttributes.Sealed,
-                                                        "fs"+fwi.Next+"$"+fi.Name, typeof(FieldWrapper));
-    CodeGenerator cg = tg.DefineMethodOverride("Call", true);
-
-    if(Options.Current.Debug)
-    { Label good = cg.ILG.DefineLabel();
-      cg.EmitArgGet(0);
-      cg.ILG.Emit(OpCodes.Ldlen);
-      cg.EmitInt(fi.IsStatic ? 1 : 2);
-      cg.ILG.Emit(OpCodes.Bge_S, good);
-      cg.EmitString((fi.IsStatic ? "static" : "non-static")+" field getter expects "+
-                    (fi.IsStatic ? "1 argument" : "2 arguments"));
-      cg.EmitNew(typeof(TargetParameterCountException), typeof(string));
-      cg.ILG.Emit(OpCodes.Throw);
-      cg.ILG.MarkLabel(good);
-    }
-
-    if(!fi.IsStatic)
-    { cg.EmitArgGet(0);
-      cg.EmitInt(0);
-      cg.ILG.Emit(OpCodes.Ldelem_Ref);
-      if(fi.DeclaringType != typeof(object))
-        cg.ILG.Emit(fi.DeclaringType.IsValueType ? OpCodes.Unbox : OpCodes.Castclass, fi.DeclaringType);
-    }
-
-    cg.EmitArgGet(0);
-    cg.EmitInt(fi.IsStatic ? 0 : 1);
-    cg.ILG.Emit(OpCodes.Ldelem_Ref);
-    if(UsesIndirectCopy(fi.FieldType))
-    { cg.EmitFieldGetAddr(fi.DeclaringType, fi.Name);
-      Interop.EmitConvertTo(cg, fi.FieldType, true);
-      cg.ILG.Emit(OpCodes.Cpobj, fi.FieldType);
-    }
-    else
-    { Interop.EmitConvertTo(cg, fi.FieldType);
-      cg.EmitFieldSet(fi.DeclaringType, fi.Name);
-    }
-
-    cg.EmitNull();
-    cg.EmitReturn();
-    cg.Finish();
-
-    cg = tg.DefineConstructor(Type.EmptyTypes);
-    cg.EmitThis();
-    cg.EmitString(fi.IsStatic ? fi.DeclaringType.FullName+"."+fi.Name : fi.Name);
-    cg.EmitCall(typeof(FieldWrapper).GetConstructor(new Type[] { typeof(string) }));
-    cg.EmitReturn();
-    cg.Finish();
-
-    return (FieldWrapper)tg.FinishType().GetConstructor(Type.EmptyTypes).Invoke(null);
+  
+  #region MakeFunctionWrapper
+  internal static FunctionWrapper MakeFunctionWrapper(MethodBase mi)
+  { bool isCons = mi is ConstructorInfo;
+    return (FunctionWrapper)MakeSignatureWrapper(mi)
+            .GetConstructor(isCons ? Type.EmptyTypes : new Type[] { typeof(IntPtr), typeof(bool) })
+            .Invoke(isCons ? Ops.EmptyArray : new object[] { mi.MethodHandle.GetFunctionPointer(), mi.IsStatic });
   }
   #endregion
 
@@ -668,7 +1027,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
 
       #region Constructor
       if(!isCons)
-      { cg = tg.DefineChainedConstructor(typeof(IntPtr));
+      { cg = tg.DefineChainedConstructor(typeof(IntPtr), typeof(bool));
         cg.EmitReturn();
         cg.Finish();
       }
@@ -754,7 +1113,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
       #endregion
 
       #region Call
-      cg = tg.DefineMethodOverride("Call", true);
+      cg = tg.DefineMethodOverride("Call", true, typeof(object[]));
 
       if(checkArity!=null)
       { cg.EmitArgGet(0);
@@ -1019,208 +1378,6 @@ public sealed class ReflectedType : MemberContainer, IProcedure
 }
 #endregion
 
-#region Interop
-public sealed class Interop
-{ Interop() { }
-
-  #region Call
-  public static object Call(FunctionWrapper[] funcs, object[] args)
-  { if(funcs.Length==1) return funcs[0].Call(args);
-
-    Conversion best=Conversion.None, bqual=Conversion.None;
-    int besti=-1;
-
-    Type[] types = new Type[args.Length];
-    for(int i=0; i<args.Length; i++)
-    { object o = args[i];
-      if(o==null) types[i] = null;
-      else
-      { Type type = o.GetType();
-        if(type==Cast.ClassType)
-        { Cast cast = (Cast)o;
-          args[i]  = cast.Value;
-          types[i] = cast.Type;
-        }
-        else types[i] = type;
-      }
-    }
-
-    unsafe
-    { Conversion *rets = stackalloc Conversion[funcs.Length];
-
-      for(int i=0; i<funcs.Length; i++)
-      { Conversion conv = funcs[i].TryMatch(args, types), qual=conv&Conversion.QualityMask;
-        if(qual>bqual || qual==bqual && (conv>best && (best&Conversion.PacksPA)!=0 ||
-                                         conv<best && (conv&Conversion.PacksPA)==0))
-        { best=conv; bqual=qual; besti=i;
-          if(bqual==Conversion.Identity) break; // this complements the check down below
-        }
-        rets[i] = conv;
-      }
-
-      if(besti==-1) throw new ArgumentException("Unable to bind arguments");
-      if(bqual!=Conversion.Identity)
-        for(int i=besti+1; i<funcs.Length; i++)
-          if(rets[i]==best) throw new ArgumentException("Ambiguous arguments");
-    }
-
-    return funcs[besti].Call(args);
-  }
-  #endregion
-
-  public static Type GetType(string name) { return GetType(name, false); }
-  public static Type GetType(string name, bool throwOnError)
-  { Type type = Type.GetType(name);
-    if(type==null)
-      foreach(Assembly a in AppDomain.CurrentDomain.GetAssemblies())
-      { type = a.GetType(name);
-        if(type!=null) break;
-      }
-    if(type==null && throwOnError) throw new ArgumentException("Unable to load type: "+name, "name");
-    return type;
-  }
-
-  static void LoadAssembly(Assembly ass)
-  { Hashtable namespaces = new Hashtable();
-    foreach(Type type in ass.GetTypes())
-    { if(!type.IsPublic || type.DeclaringType!=null || type.Namespace==null) continue;
-      ArrayList list = (ArrayList)namespaces[type.Namespace];
-      if(list==null) namespaces[type.Namespace] = list = new ArrayList();
-      list.Add(type);
-    }
-    foreach(DictionaryEntry de in namespaces)
-    { ReflectedNamespace ns = ReflectedNamespace.FromName((string)de.Key);
-      foreach(Type type in (ArrayList)de.Value) ns.AddType(type);
-    }
-  }
-
-  public static void LoadAssemblyByName(string name)
-  { Assembly ass = Assembly.LoadWithPartialName(name);
-    if(ass==null) throw new ArgumentException("Assembly "+name+" could not be loaded");
-    LoadAssembly(ass);
-  }
-
-  public static void LoadAssemblyFromFile(string name) { LoadAssembly(Assembly.LoadFrom(name)); }
-
-  #region MakeDelegateWrapper
-  public static object MakeDelegateWrapper(IProcedure proc, Type delegateType)
-  { Create cr;
-    lock(handlers) cr = (Create)handlers[delegateType];
-
-    if(cr==null)
-    { MethodInfo mi = delegateType.GetMethod("Invoke", BindingFlags.Public|BindingFlags.Instance);
-      Signature sig = new Signature(mi, true);
-
-      lock(dsigs)
-      { cr = (Create)dsigs[sig];
-        if(cr==null)
-        { for(int i=0; i<sig.Params.Length; i++)
-            if(sig.Params[i].IsByRef) throw new NotImplementedException(); // TODO: implement this
-          TypeGenerator tg = SnippetMaker.Assembly.DefineType(TypeAttributes.Public|TypeAttributes.Sealed,
-                                                              "dw$"+dwi.Next, null);
-          Slot pslot = tg.DefineField(FieldAttributes.Private, "proc", typeof(IProcedure));
-
-          CodeGenerator cg = tg.DefineConstructor(typeof(IProcedure));
-          cg.EmitArgGet(0);
-          pslot.EmitSet(cg);
-          cg.EmitReturn();
-          cg.Finish();
-          ConstructorInfo cons = (ConstructorInfo)cg.MethodBase;
-
-          cg = tg.DefineMethod("Handle", sig.Return, sig.Params);
-          pslot.EmitGet(cg);
-          if(sig.Params.Length==0) cg.EmitFieldGet(typeof(Ops), "EmptyArray");
-          else
-          { cg.EmitNewArray(typeof(object), sig.Params.Length);
-            for(int i=0; i<sig.Params.Length; i++)
-            { cg.Dup();
-              cg.EmitInt(i);
-              cg.EmitArgGet(i);
-              if(sig.Params[i].IsValueType) cg.ILG.Emit(OpCodes.Box, sig.Params[i]);
-              cg.ILG.Emit(OpCodes.Stelem_Ref);
-            }
-            if(sig.Return==typeof(object)) cg.ILG.Emit(OpCodes.Tailcall);
-            cg.EmitCall(typeof(IProcedure), "Call");
-            if(sig.Return==typeof(void)) cg.ILG.Emit(OpCodes.Pop);
-            else EmitConvertTo(cg, sig.Return);
-            cg.EmitReturn();
-            cg.Finish();
-          }
-
-          cg = tg.DefineStaticMethod("Create", typeof(object), typeof(IProcedure));
-          cg.EmitArgGet(0);
-          cg.EmitNew(cons);
-          cg.EmitReturn();
-          cg.Finish();
-
-          Type type = tg.FinishType();
-          dsigs[sig] = cr = (Create)Delegate.CreateDelegate(typeof(Create), type.GetMethod("Create"));
-        }
-      }
-
-      lock(handlers) handlers[delegateType] = cr;
-    }
-
-    return cr(proc);
-  }
-  #endregion
-
-  internal static void EmitConvertTo(CodeGenerator cg, Type type) { EmitConvertTo(cg, type, false); }
-  internal static void EmitConvertTo(CodeGenerator cg, Type type, bool useIndirect)
-  { if(type==typeof(void)) throw new ArgumentException("Can't convert to void!");
-
-    if(type.IsValueType || type.IsSubclassOf(typeof(Delegate))) // TODO: be sure to handle all special object types
-    { cg.EmitTypeOf(type);
-      cg.EmitCall(typeof(Ops), "ConvertTo", typeof(object), typeof(Type));
-    }
-
-    if(Options.Current.Debug)
-    { Slot tmp = cg.AllocLocalTemp(typeof(object));
-      Label good = cg.ILG.DefineLabel();
-
-      cg.Dup();
-      tmp.EmitSet(cg);
-      cg.ILG.Emit(OpCodes.Isinst, type);
-      cg.ILG.Emit(OpCodes.Brtrue_S, good);
-      if(!type.IsValueType)
-      { tmp.EmitGet(cg);
-        cg.ILG.Emit(OpCodes.Brfalse_S, good); // null reference types are okay
-      }
-      cg.EmitString("expected argument of type "+Ops.TypeName(type)+", but received ");
-      tmp.EmitGet(cg);
-      cg.EmitCall(typeof(Ops), "TypeName", typeof(object));
-      cg.EmitCall(typeof(string), "Concat", typeof(string), typeof(string));
-      cg.EmitCall(typeof(Ops), "TypeError", typeof(string));
-      cg.ILG.Emit(OpCodes.Throw);
-      cg.ILG.MarkLabel(good);
-      tmp.EmitGet(cg);
-
-      cg.FreeLocalTemp(tmp);
-    }
-
-    if(type.IsValueType)
-    { cg.ILG.Emit(OpCodes.Unbox, type);
-      if(!useIndirect) cg.EmitIndirectLoad(type);
-    }
-    else if(type!=typeof(object)) cg.ILG.Emit(OpCodes.Castclass, type);
-  }
-
-  internal static void LoadStandardAssemblies()
-  { if(!loadedStandard)
-    { loadedStandard = true;
-      LoadAssemblyByName("mscorlib");
-      LoadAssemblyByName("System");
-    }
-  }
-
-  delegate object Create(IProcedure proc);
-
-  static readonly Hashtable handlers=new Hashtable(), dsigs=new Hashtable();
-  static readonly Index dwi=new Index();
-  static bool loadedStandard;
-}
-#endregion
-
 #region Signature
 sealed class Signature
 { public Signature(MethodBase mi) : this(mi, false) { }
@@ -1277,6 +1434,16 @@ sealed class Signature
   public CallingConventions Convention;
   public IntPtr PointerHack;
   public bool     IsCons, ParamArray;
+}
+#endregion
+
+#region StructCreator
+public abstract class StructCreator : FunctionWrapper
+{ public override int MaxArgs { get { return 0; } }
+  public override int MinArgs { get { return 0; } }
+  public override Conversion TryMatch(object[] args, Type[] types)
+  { return TryMatch(args, types, Type.EmptyTypes, 0, 0, false);
+  }
 }
 #endregion
 

@@ -4,7 +4,7 @@ It produces languages which can be interpreted or compiled, targetting
 the Microsoft .NET Framework.
 
 http://www.adammil.net/
-Copyright (C) 2005 Adam Milazzo
+Copyright (C) 2005-2006 Adam Milazzo
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -183,7 +183,7 @@ public class CodeGenerator
   public void EmitConvertTo(Type type, Type onStack) { EmitConvertTo(type, onStack, false); }
   public void EmitConvertTo(Type type, Type onStack, bool checkOverflow)
   { if(!TryEmitConvertTo(type, onStack, checkOverflow))
-      throw new ArgumentException(type+" cannot be converted to "+onStack);
+      throw new ArgumentException(onStack+" cannot be converted to "+type);
   }
 
   public void EmitDouble(double value) { ILG.Emit(OpCodes.Ldc_R8, value); }
@@ -552,8 +552,12 @@ public class CodeGenerator
   public bool TryEmitConvertTo(Type type, Type onStack) { return TryEmitConvertTo(type, onStack, false); }
   public bool TryEmitConvertTo(Type type, Type onStack, bool checkOverflow)
   { if(type==null) throw new ArgumentNullException("type");
-    if(onStack==type || !onStack.IsValueType && !type.IsValueType && type.IsAssignableFrom(onStack)) return true;
+    if(onStack==type) return true;
     if(onStack==null) return !type.IsValueType;
+    if(!type.IsValueType && type.IsAssignableFrom(onStack))
+    { if(onStack.IsValueType) ILG.Emit(OpCodes.Box, onStack);
+      return true;
+    }
 
     if(onStack.IsPrimitive && type.IsPrimitive)
     { if(type==typeof(bool))
