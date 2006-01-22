@@ -67,13 +67,13 @@ public sealed class Importer
     module = top;
     for(int i=1; i<bits.Length && module!=null; i++)
     { object obj;
-      if(!module.GetSlot(bits[i], out obj)) goto error; // TODO: should we use GetValue instead of GetSlot?
+      if(!module.GetProperty(module, bits[i], out obj)) goto error;
       module = obj as MemberContainer;
     }
     if(returnTop) module = top;
     if(module!=null || !throwOnError) return module;
 
-    error: throw new ModuleLoadException("Unable to load module: "+name);
+    error: throw new TypeLoadException("Unable to load module: "+name);
   }
 
   public static MemberContainer Load(Type type)

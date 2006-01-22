@@ -85,8 +85,8 @@ public struct Integer : IConvertible, IComparable, ICloneable
 
   public Integer(string s) : this(s, 10) { }
   public Integer(string s, int radix)
-  { if(s==null) throw Ops.ValueError("Cannot convert null to Integer");
-    if(radix<2 || radix>36) throw Ops.ValueError("radix must be from 2 to 36");
+  { if(s==null) throw new InvalidCastException("Cannot convert null to Integer");
+    if(radix<2 || radix>36) throw new ArgumentOutOfRangeException("radix must be from 2 to 36");
     string charSet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".Substring(radix);
 
     Integer val = Zero;
@@ -100,7 +100,9 @@ public struct Integer : IConvertible, IComparable, ICloneable
     }
     while(i<s.Length && char.IsWhiteSpace(s[i])) i++;
 
-    if(i==s.Length || charSet.IndexOf(c=char.ToUpper(s[i]))==-1) throw Ops.ValueError("String does not contain a valid integer");
+    if(i==s.Length || charSet.IndexOf(c=char.ToUpper(s[i]))==-1)
+      throw new FormatException("String does not contain a valid integer");
+
     while(true)
     { val = val*radix + (c>'9' ? c-'A'+10 : c-'0');
       if(++i==s.Length || charSet.IndexOf(c=char.ToUpper(c))==-1) break;

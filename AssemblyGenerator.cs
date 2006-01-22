@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 using System;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Diagnostics;
 using System.Diagnostics.SymbolStore;
 
 namespace Scripting
@@ -46,7 +47,18 @@ public sealed class AssemblyGenerator
     an.Name  = moduleName;
     IsDebug  = debug;
     Assembly = domain.DefineDynamicAssembly(an, AssemblyBuilderAccess.RunAndSave, dir, null, null, null, null, true);
-    Module   = Assembly.DefineDynamicModule(outFileName, outFileName, debug);
+
+    if(debug)
+    { /* .NET 2.0 ConstructorInfo ci =
+        typeof(DebuggableAttribute).GetConstructor(new Type[] { typeof(DebuggableAttribute.DebuggingModes) });
+      CustomAttributeBuilder ab = new CustomAttributeBuilder(ci,  
+        new object[] { DebuggableAttribute.DebuggingModes.DisableOptimizations |
+                       DebuggableAttribute.DebuggingModes.Default });*/
+      ConstructorInfo ci = typeof(DebuggableAttribute).GetConstructor(new Type[] { typeof(bool), typeof(bool) });
+      Assembly.SetCustomAttribute(new CustomAttributeBuilder(ci, new object[] { true, true }));
+    }
+
+    Module = Assembly.DefineDynamicModule(outFileName, outFileName, debug);
     OutFileName = outFileName;
   }
 

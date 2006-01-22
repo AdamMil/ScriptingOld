@@ -285,7 +285,7 @@ public sealed class LongOps
       default: return Ops.GetCurrentLanguage().LongLeftShift(a, b);
     }
 
-    if(shift<0) throw Ops.ValueError("negative shift count");
+    if(shift<0) throw new ArgumentException("negative shift count");
     if(shift>63) return new Integer(a)<<shift;
     long res = a << shift;
     if(res<a || ((ulong)a&0x8000000000000000) != ((ulong)res&0x8000000000000000)) return new Integer(a)<<shift;
@@ -434,7 +434,7 @@ public sealed class LongOps
     object pow = Power(a, b);
     if(pow is long) return Reduce((long)pow % mod);
     if(pow is Integer) return IntegerOps.Reduce((Integer)pow % mod);
-    throw Ops.TypeError("ternary pow() requires that the base and exponent be integers");
+    throw new ArgumentException("ternary pow() requires that the base and exponent be integers");
   }
 
   public static object Subtract(long a, object b)
@@ -505,7 +505,7 @@ public sealed class LongOps
       default: return Ops.GetCurrentLanguage().LongRightShift(a, b);
     }
 
-    if(shift<0) throw Ops.ValueError("negative shift count");
+    if(shift<0) throw new ArgumentException("negative shift count");
     return shift>63 ? 0 : Reduce(a>>shift);
   }
 
