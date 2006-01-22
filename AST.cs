@@ -1070,7 +1070,11 @@ public abstract class Node
         cg.EmitIndirectLoad(desired);
       }
       else if(!type.IsValueType && !desired.IsValueType)
-      { if(!desired.IsAssignableFrom(type)) cg.ILG.Emit(OpCodes.Castclass, desired);
+      { if(desired==typeof(IProcedure))
+        { if(type.IsSubclassOf(typeof(Delegate))) cg.EmitCall(typeof(Ops), "MakeProcedure", typeof(Delegate));
+          else cg.EmitCall(typeof(Ops), "ExpectProcedure");
+        }
+        else if(!desired.IsAssignableFrom(type)) cg.ILG.Emit(OpCodes.Castclass, desired);
       }
       else cg.EmitConvertTo(desired, type);
     }
