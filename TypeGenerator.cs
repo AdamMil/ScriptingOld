@@ -4,7 +4,7 @@ It produces languages which can be interpreted or compiled, targetting
 the Microsoft .NET Framework.
 
 http://www.adammil.net/
-Copyright (C) 2005 Adam Milazzo
+Copyright (C) 2005-2006 Adam Milazzo
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -88,16 +88,29 @@ public sealed class TypeGenerator
   public CodeGenerator DefineMethodOverride(string name)
   { return DefineMethodOverride(TypeBuilder.BaseType, name, IsSealed);
   }
+  public CodeGenerator DefineMethodOverride(string name, params Type[] paramTypes)
+  { return DefineMethodOverride(TypeBuilder.BaseType, name, IsSealed, paramTypes);
+  }
   public CodeGenerator DefineMethodOverride(string name, bool final)
   { return DefineMethodOverride(TypeBuilder.BaseType.GetMethod(name, BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public),
                                 final);
   }
+  public CodeGenerator DefineMethodOverride(string name, bool final, params Type[] paramTypes)
+  { return DefineMethodOverride(TypeBuilder.BaseType, name, final, paramTypes);
+  }
   public CodeGenerator DefineMethodOverride(Type type, string name)
   { return DefineMethodOverride(type, name, IsSealed);
+  }
+  public CodeGenerator DefineMethodOverride(Type type, string name, params Type[] paramTypes)
+  { return DefineMethodOverride(type, name, IsSealed, paramTypes);
   }
   public CodeGenerator DefineMethodOverride(Type type, string name, bool final)
   { return DefineMethodOverride(type.GetMethod(name, BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public),
                                 final);
+  }
+  public CodeGenerator DefineMethodOverride(Type type, string name, bool final, params Type[] paramTypes)
+  { return DefineMethodOverride(type.GetMethod(name, BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public,
+                                               null, paramTypes, null), final);
   }
   public CodeGenerator DefineMethodOverride(MethodInfo baseMethod)
   { return DefineMethodOverride(baseMethod, IsSealed);
