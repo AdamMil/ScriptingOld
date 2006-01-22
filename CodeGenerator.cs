@@ -318,6 +318,7 @@ public class CodeGenerator
     else node.Emit(this, ref type);
   }
 
+  // FIXME: handle Interrupt nodes here and elsewhere
   public void EmitNodes(Node node1, Node node2) { EmitNodes(true, node1, node2); }
   public void EmitNodes(bool preserveOrder, Node node1, Node node2)
   { if(!node2.ClearsStack)
@@ -389,6 +390,7 @@ public class CodeGenerator
 
   public void EmitNull() { ILG.Emit(OpCodes.Ldnull); }
 
+  // TODO: skip over nodes that simply emit null
   public void EmitObjectArray(Node[] exprs) { EmitObjectArray(exprs, 0, exprs.Length, false); }
   public void EmitObjectArray(Node[] exprs, int start, int length) { EmitObjectArray(exprs, start, length, false); }
   public Slot EmitObjectArray(Node[] exprs, bool allocate)

@@ -42,7 +42,7 @@ public interface IProcedure
 }
 
 public interface IFancyProcedure : IProcedure
-{ object Call(object[] args, string[] keywords, object[] values);
+{ object Call(object[] positional, string[] keywords, object[] values);
 }
 
 public abstract class Lambda : IFancyProcedure
@@ -178,13 +178,8 @@ public sealed class Cast : MemberContainer
       throw new InvalidCastException("Attempted to cast "+Ops.TypeName(value)+" to "+Ops.TypeName(Type));
   }
 
-  public override void DeleteSlot(string name) { ReflectedType.DeleteSlot(name); }
-
-  public override object GetSlot(string name) { return ReflectedType.GetSlot(name); }
-  public override bool GetSlot(string name, out object ret) { return ReflectedType.GetSlot(name, out ret); }
-  public override object GetValue(string name, params object[] args) { return ReflectedType.GetValue(name, args); }
-  public override bool GetValue(string name, out object value, params object[] args)
-  { return ReflectedType.GetValue(name, out value, args);
+  public override bool GetSlot(object instance, string name, out object ret)
+  { return ReflectedType.GetSlot(instance, name, out ret);
   }
 
   public override ICollection GetMemberNames(bool includeImports)
@@ -195,9 +190,12 @@ public sealed class Cast : MemberContainer
   { ReflectedType.Import(top, names, asNames);
   }
 
-  public override void SetSlot(string name, object value) { ReflectedType.SetSlot(name, value); }
-  public override void SetValue(string name, object[] args, object value)
-  { ReflectedType.SetValue(name, args, value);
+  public override bool TryDeleteSlot(object instance, string name)
+  { return ReflectedType.TryDeleteSlot(instance, name);
+  }
+
+  public override bool TrySetSlot(object instance, string name, object value)
+  { return ReflectedType.TrySetSlot(instance, name, value);
   }
 
   public override string ToString() { return "#<cast '"+Ops.Str(Value)+"' to "+Ops.TypeName(Type)+">"; }
@@ -224,10 +222,9 @@ public class CodeModule : MemberContainer
 { public CodeModule(string name) { Name=name; TopLevel=new TopLevel(); }
   public CodeModule(string name, TopLevel top) { Name=name; TopLevel=top; }
 
-  public override void DeleteSlot(string name) { TopLevel.Globals.Unbind(name); }
-
-  public override object GetSlot(string name) { return TopLevel.Globals.Get(name); }
-  public override bool GetSlot(string name, out object ret) { return TopLevel.Globals.Get(name, out ret); }
+  public override bool GetSlot(object instance, string name, out object ret)
+  { return TopLevel.Globals.Get(name, out ret);
+  }
 
   public override ICollection GetMemberNames(bool includeImports)
   { if(includeImports) return TopLevel.Globals.Dict.Keys;
@@ -261,7 +258,12 @@ public class CodeModule : MemberContainer
       }
   }
 
-  public override void SetSlot(string name, object value) { TopLevel.Set(name, value); }
+  public override bool TryDeleteSlot(object instance, string name) { TopLevel.Globals.Unbind(name); return true; }
+
+  public override bool TrySetSlot(object instance, string name, object value)
+  { TopLevel.Set(name, value);
+    return true;
+  }
 
   public override string ToString() { return "#<module '"+Name+"'>"; }
 
@@ -287,7 +289,7 @@ public sealed class BindingSpace
 { public void Alter(string name, object value)
   { Binding bind;
     lock(Dict) bind = (Binding)Dict[name];
-    if(bind==null) throw new NameException("no such name: "+name);
+    if(bind==null) throw UndefinedVariableException.FromName(name);
     bind.Value = value;
   }
 
@@ -309,7 +311,7 @@ public sealed class BindingSpace
   public object Get(string name)
   { Binding bind;
     lock(Dict) bind = (Binding)Dict[name];
-    if(bind==null || bind.Value==Binding.Unbound) throw new NameException("no such name: "+name);
+    if(bind==null || bind.Value==Binding.Unbound) throw UndefinedVariableException.FromName(name);
     return bind.Value;
   }
 
@@ -436,57 +438,150 @@ public abstract class Generator : IEnumerator
 
 #region IProperty
 public interface IProperty
-{ object Get(object[] args);
-  object Set(object[] args, object value);
-}
-#endregion
-
-#region MemberCache
-public struct MemberCache
-{ public object Type, Value;
-
-  public static object TypeFromObject(object obj)
-  { MemberContainer mc = obj as MemberContainer;
-    if(mc==null) return obj.GetType();
-    ReflectedType rt = obj as ReflectedType;
-    return rt==null ? mc : (object)rt.Type;
-  }
+{ bool Call(object instance, out object ret, params object[] args);
+  bool Call(object instance, out object ret, object[] positional, string[] names, object[] values);
+  bool Get(object instance, out object ret);
+  bool GetAccessor(object instance, out IProcedure ret);
+  bool TrySet(object instance, object value);
 }
 #endregion
 
 #region MemberContainer
 public abstract class MemberContainer
-{ public abstract void DeleteSlot(string name);
+{ public sealed class SlotAccessor : IProcedure
+  { public SlotAccessor(string member) { Member = member; }
+
+    public int MinArgs { get { return 1; } }
+    public int MaxArgs { get { return 2; } }
+    public bool NeedsFreshArgs { get { return false; } }
+
+    public object Call(object[] args)
+    { if(args.Length==1) return Ops.GetSlot(args[0], Member);
+      else if(args.Length==2) { Ops.SetSlot(args[1], args[0], Member); return null; }
+      else throw Ops.ArityError("slot accessor", args.Length, 1, 2);
+    }
+
+    public readonly string Member;
+  }
+
+  public void DeleteSlot(object instance, string name)
+  { if(!TryDeleteSlot(instance, name))
+      throw new AttributeException(instance, name,
+                                   string.Format("can't delete attribute '{0}' on '{1}'", Ops.TypeName(instance), name));
+  }
+  public abstract bool TryDeleteSlot(object instance, string name);
 
   public ICollection GetMemberNames() { return GetMemberNames(false); }
   public abstract ICollection GetMemberNames(bool includeImports);
 
-  public abstract object GetSlot(string name);
-  public abstract bool GetSlot(string name, out object ret);
-
-  public object GetValue(string name) { return GetValue(name, Ops.EmptyArray); }
-  public virtual object GetValue(string name, params object[] args)
-  { return Ops.GetPropertyValue(GetSlot(name), args);
+  public object GetSlot(object instance, string name)
+  { object ret;
+    if(!GetSlot(instance, name, out ret))
+      throw new AttributeException(instance, name,
+                                   string.Format("can't get attribute '{0}' on '{1}'", Ops.TypeName(instance), name));
+    return ret;
   }
 
-  public bool GetValue(string name, out object value) { return GetValue(name, out value, Ops.EmptyArray); }
-  public virtual bool GetValue(string name, out object value, params object[] args)
-  { if(GetSlot(name, out value)) { value=Ops.GetPropertyValue(value, args); return true; }
-    else return false;
+  public abstract bool GetSlot(object instance, string name, out object ret);
+
+  public void SetSlot(object instance, string name, object value)
+  { if(!TrySetSlot(instance, name, value))
+      throw new AttributeException(instance, name,
+                                   string.Format("can't set attribute '{0}' on '{1}'", Ops.TypeName(instance), name));
+  }
+
+  public abstract bool TrySetSlot(object instance, string name, object value);
+
+  public IProcedure GetAccessor(object instance, string name)
+  { IProcedure ret;
+    if(!GetAccessor(instance, name, out ret))
+      throw new AttributeException(instance, name,
+                                   string.Format("can't get accessor '{0}' on '{1}'", Ops.TypeName(instance), name));
+    return ret;
+  }
+
+  public bool GetAccessor(object instance, string name, out IProcedure ret)
+  { object slot;
+    if(!GetSlot(instance, name, out slot)) { ret=null; return false; }
+    IProperty prop = slot as IProperty;
+    if(prop!=null) return prop.GetAccessor(instance, out ret);
+    else
+    { ret = new SlotAccessor(name);
+      return true;
+    }
+  }
+
+  public object CallProperty(object instance, string name, params object[] args)
+  { object ret;
+    if(!CallProperty(instance, name, out ret, args))
+      throw new AttributeException(instance, name,
+                                   string.Format("can't call property '{0}' on '{1}'", Ops.TypeName(instance), name));
+    return ret;
+  }
+
+  public bool CallProperty(object instance, string name, out object ret, params object[] args)
+  { if(!GetSlot(instance, name, out ret)) return false;
+    IProperty prop = ret as IProperty;
+    if(prop!=null) return prop.Call(instance, out ret, args);
+    else
+    { IProcedure proc = ret as IProcedure;
+      if(proc==null) { ret=null; return false; }
+      else { ret=proc.Call(args); return true; }
+    }
+  }
+
+  public object CallProperty(object instance, string name, object[] positional, string[] names, object[] values)
+  { object ret;
+    if(!CallProperty(instance, name, out ret, positional, names, values))
+      throw new AttributeException(instance, name,
+                                   string.Format("can't call property '{0}' on '{1}'", Ops.TypeName(instance), name));
+    return ret;
+  }
+
+  public bool CallProperty(object instance, string name, out object ret,
+                           object[] positional, string[] names, object[] values)
+  { if(!GetSlot(instance, name, out ret)) return false;
+    IProperty prop = ret as IProperty;
+    if(prop!=null) return prop.Call(instance, out ret, positional, names, values);
+    else
+    { IFancyProcedure proc = ret as IFancyProcedure;
+      if(proc==null) { ret=null; return false; }
+      else { ret=proc.Call(positional, names, values); return true; }
+    }
+  }
+
+  public object GetProperty(object instance, string name)
+  { object ret;
+    if(!GetProperty(instance, name, out ret))
+      throw new AttributeException(instance, name,
+                                   string.Format("can't get property '{0}' on '{1}'", Ops.TypeName(instance), name));
+    return ret;
+  }
+
+  public bool GetProperty(object instance, string name, out object ret)
+  { if(!GetSlot(instance, name, out ret)) return false;
+    IProperty prop = ret as IProperty;
+    return prop==null ? true : prop.Get(instance, out ret);
+  }
+
+  public void SetProperty(object instance, string name, object value)
+  { if(!TrySetProperty(instance, name, value))
+      throw new AttributeException(instance, name,
+                                   string.Format("can't set property '{0}' on '{1}'", Ops.TypeName(instance), name));
+  }
+
+  public bool TrySetProperty(object instance, string name, object value)
+  { object slot;
+    if(GetSlot(instance, name, out slot))
+    { IProperty prop = slot as IProperty;
+      if(prop!=null) return prop.TrySet(instance, value);
+    }
+    return TrySetSlot(instance, name, value);
   }
 
   public void Import(TopLevel top) { Import(top, null, null); }
   public void Import(TopLevel top, string[] names) { Import(top, names, names); }
   public abstract void Import(TopLevel top, string[] names, string[] asNames);
-
-  public abstract void SetSlot(string name, object value);
-
-  public void SetValue(string name, object value) { SetValue(name, Ops.EmptyArray, value); }
-  public virtual void SetValue(string name, object[] args, object value)
-  { IProperty prop = GetSlot(name) as IProperty;
-    if(prop!=null) prop.Set(args, value);
-    else SetSlot(name, value);
-  }
 
   public static MemberContainer FromObject(object obj)
   { MemberContainer mc = obj as MemberContainer;
@@ -588,6 +683,22 @@ public sealed class Ops
     return false;
   }
 
+  public static ArgumentException ArgError(string message) { return new ArgumentException(message); }
+  public static ArgumentException ArgError(string format, params object[] args)
+  { return new ArgumentException(string.Format(format, args));
+  }
+
+  public static ArgumentException ArityError(string name, int nargs, int min, int max)
+  { if(max==-1)
+    { if(nargs<min) return new ArgumentException(name+": expects at least "+min.ToString()+
+                                                 " arguments, but received "+nargs.ToString());
+    }
+    else if(nargs<min || nargs>max)
+      return new ArgumentException(name+": expects "+(min==max ? min.ToString() : min.ToString()+"-"+max.ToString())+
+                                   " arguments, but received "+nargs.ToString());
+    return new ArgumentException("wrong number of arguments");
+  }
+
   public static object BitwiseAnd(object a, object b)
   { switch(Convert.GetTypeCode(a))
     { case TypeCode.Byte:  return IntOps.BitwiseAnd((byte)a, b);
@@ -686,68 +797,11 @@ public sealed class Ops
   public static object Call(object func, params object[] args) { return ExpectProcedure(func).Call(args); }
 
   public static object Call(object func, CallArg[] args)
-  { int ai=0, pi=0, num=0;
-    bool hasdict = false;
-
-    for(; ai<args.Length; ai++)
-      if(args[ai].Type==null) num++;
-      else if(args[ai].Type==CallArg.ListType)
-      { ICollection col = args[ai].Value as ICollection;
-        if(col!=null) num += col.Count;
-        else throw new ArgumentException("Expected ICollection list type, but received "+TypeName(args[ai].Value));
-      }
-      else if(args[ai].Type is int) num += (int)args[ai].Type;
-      else break;
-
-    object[] positional = num==0 ? null : new object[num];
-    for(int i=0; i<ai; i++)
-      if(args[i].Type==null) positional[pi++] = args[i].Value;
-      else if(args[i].Type==CallArg.ListType)
-      { ICollection col = (ICollection)args[i].Value as ICollection;
-        col.CopyTo(positional, pi);
-        pi += col.Count;
-      }
-      else if(args[i].Type is int)
-      { object[] items = (object[])args[i].Value;
-        items.CopyTo(positional, pi);
-        pi += items.Length;
-      }
-
-    if(ai==args.Length) return ExpectProcedure(func).Call(positional);
-
-    num = 0;
-    for(int i=ai; i<args.Length; i++)
-      if(args[i].Type==CallArg.DictType)
-      { IDictionary dict = args[i].Value as IDictionary;
-        if(dict!=null) num += dict.Count;
-        else throw new ArgumentException("Expected IDictionary dict type, but received "+TypeName(args[i].Value));
-        hasdict = true;
-      }
-      else num += ((object[])args[i].Type).Length;
-
-    if(!hasdict)
-      return ExpectFancyProcedure(func).Call(positional, (string[])args[ai].Value, (object[])args[ai].Type);
-
-    string[] names = new string[num];
-    object[] values = new object[num];
-    pi = 0;
-    for(; ai<args.Length; ai++)
-      if(args[ai].Type!=CallArg.DictType)
-      { string[] na = (string[])args[ai].Value;
-        na.CopyTo(names, pi);
-        ((object[])args[ai].Type).CopyTo(values, pi);
-        pi += na.Length;
-      }
-      else
-      { IDictionary dict = (IDictionary)args[ai].Value;
-        foreach(DictionaryEntry e in dict)
-        { names[pi] = Ops.Str(e.Key);
-          values[pi] = e.Value;
-          pi++;
-        }
-      }
-
-    return ExpectFancyProcedure(func).Call(positional, names, values);
+  { object[] positional, values;
+    string[] names;
+    EvaluateCallArgs(args, out positional, out names, out values);
+    return names==null ? ExpectProcedure(func).Call(positional)
+                       : ExpectFancyProcedure(func).Call(positional, names, values);
   }
 
   public static void CheckArity(string name, object[] args, int num) { CheckArity(name, args.Length, num, num); }
@@ -775,17 +829,18 @@ public sealed class Ops
   }
 
   public static Binding CheckBinding(Binding bind)
-  { if(bind.Value==Binding.Unbound) throw new NameException("use of unbound variable: "+bind.Name);
+  { if(bind.Value==Binding.Unbound) throw UndefinedVariableException.FromName(bind.Name);
     return bind;
   }
 
   public static void CheckVariable(object value, string name)
-  { if(value==Binding.Unbound) throw new NameException("use of unbound variable: "+name);
+  { if(value==Binding.Unbound) throw UndefinedVariableException.FromName(name);
   }
 
   public static object[] CheckValues(MultipleValues values, int length)
-  { if(values.Values.Length<length) throw Ops.ValueError("expected at least "+length.ToString()+
-                                                         " values, but received "+values.Values.Length.ToString());
+  { if(values.Values.Length<length)
+      throw new ArgumentException("expected at least "+length.ToString()+" values, but received "+
+                                  values.Values.Length.ToString());
     return values.Values;
   }
 
@@ -837,12 +892,12 @@ public sealed class Ops
   public static object ConvertTo(object o, Type type)
   { switch(ConvertTo(o==null ? null : o.GetType(), type))
     { case Conversion.Identity: case Conversion.Reference: return o;
-      case Conversion.None: throw TypeError("object cannot be converted to '{0}'", type);
+      case Conversion.None:
+        throw new InvalidCastException(string.Format("object cannot be converted to '{0}'", TypeName(type)));
       default:
         if(type==typeof(bool)) return FromBool(IsTrue(o));
         if(type.IsSubclassOf(typeof(Delegate))) return MakeDelegate(o, type);
-        try { return Convert.ChangeType(o, type); }
-        catch(OverflowException) { throw ValueError("large value caused overflow"); }
+        return Convert.ChangeType(o, type);
     }
   }
 
@@ -907,6 +962,68 @@ public sealed class Ops
 
   public static object Equal(object a, object b) { return FromBool(AreEqual(a, b)); }
 
+  public static void EvaluateCallArgs(CallArg[] args, out object[] positional, out string[] names, out object[] values)
+  { int ai=0, pi=0, num=0;
+    bool hasdict = false;
+
+    for(; ai<args.Length; ai++)
+      if(args[ai].Type==null) num++;
+      else if(args[ai].Type==CallArg.ListType)
+      { ICollection col = args[ai].Value as ICollection;
+        if(col!=null) num += col.Count;
+        else throw new ArgumentException("Expected ICollection list type, but received "+TypeName(args[ai].Value));
+      }
+      else if(args[ai].Type is int) num += (int)args[ai].Type;
+      else break;
+
+    positional = num==0 ? null : new object[num];
+    for(int i=0; i<ai; i++)
+      if(args[i].Type==null) positional[pi++] = args[i].Value;
+      else if(args[i].Type==CallArg.ListType)
+      { ICollection col = (ICollection)args[i].Value as ICollection;
+        col.CopyTo(positional, pi);
+        pi += col.Count;
+      }
+      else if(args[i].Type is int)
+      { object[] items = (object[])args[i].Value;
+        items.CopyTo(positional, pi);
+        pi += items.Length;
+      }
+
+    if(ai==args.Length) { names=null; values=null; return; }
+
+    num = 0;
+    for(int i=ai; i<args.Length; i++)
+      if(args[i].Type==CallArg.DictType)
+      { IDictionary dict = args[i].Value as IDictionary;
+        if(dict!=null) num += dict.Count;
+        else throw new ArgumentException("Expected IDictionary dict type, but received "+TypeName(args[i].Value));
+        hasdict = true;
+      }
+      else num += ((object[])args[i].Type).Length;
+
+    if(!hasdict) { names=(string[])args[ai].Value; values=(object[])args[ai].Type; return; }
+
+    names = new string[num];
+    values = new object[num];
+    pi = 0;
+    for(; ai<args.Length; ai++)
+      if(args[ai].Type!=CallArg.DictType)
+      { string[] na = (string[])args[ai].Value;
+        na.CopyTo(names, pi);
+        ((object[])args[ai].Type).CopyTo(values, pi);
+        pi += na.Length;
+      }
+      else
+      { IDictionary dict = (IDictionary)args[ai].Value;
+        foreach(DictionaryEntry e in dict)
+        { names[pi] = Ops.Str(e.Key);
+          values[pi] = e.Value;
+          pi++;
+        }
+      }
+  }
+
   public static char ExpectChar(object obj)
   { try { return (char)obj; }
     catch(InvalidCastException) { throw new ArgumentException("expected character but received "+TypeName(obj)); }
@@ -921,7 +1038,7 @@ public sealed class Ops
   public static IEnumerator ExpectEnumerator(object obj)
   { IEnumerable ea = obj as IEnumerable;
     IEnumerator  e = ea==null ? obj as IEnumerator : ea.GetEnumerator();
-    if(e==null) throw Ops.TypeError("expected enumerable object but received "+Ops.TypeName(obj));
+    if(e==null) throw new ArgumentException("expected enumerable object but received "+Ops.TypeName(obj));
     return e;
   }
 
@@ -1040,26 +1157,74 @@ public sealed class Ops
   { return MemberContainer.FromObject(obj).GetMemberNames(includeImports);
   }
 
+  public static IProcedure GetAccessor(object obj, string name)
+  { return MemberContainer.FromObject(obj).GetAccessor(obj, name);
+  }
+  public static bool GetAccessor(object obj, string name, out IProcedure proc)
+  { return MemberContainer.FromObject(obj).GetAccessor(obj, name, out proc);
+  }
+
+  public static object CallProperty(object obj, string name) { return CallProperty(obj, name, EmptyArray); }
+  public static bool CallProperty(object obj, string name, out object ret)
+  { return CallProperty(obj, name, out ret, EmptyArray);
+  }
+
+  public static object CallProperty(object obj, string name, params object[] args)
+  { return MemberContainer.FromObject(obj).CallProperty(obj, name, args);
+  }
+  public static bool CallProperty(object obj, string name, out object ret, params object[] args)
+  { return MemberContainer.FromObject(obj).CallProperty(obj, name, out ret, args);
+  }
+
+  public static object CallProperty(object obj, string name, object[] positional, string[] names, object[] values)
+  { return MemberContainer.FromObject(obj).CallProperty(obj, name, positional, names, values);
+  }
+  public static bool CallProperty(object obj, string name, out object ret,
+                                    object[] positional, string[] names, object[] values)
+  { return MemberContainer.FromObject(obj).CallProperty(obj, name, out ret, positional, names, values);
+  }
+
+  public static object CallProperty(object obj, string name, CallArg[] args)
+  { MemberContainer mc = MemberContainer.FromObject(obj);
+    object[] pos, values;
+    string[] names;
+    EvaluateCallArgs(args, out pos, out names, out values);
+    return names==null ? mc.CallProperty(obj, name, pos) : mc.CallProperty(obj, name, pos, names, values);
+  }
+
+  public static bool CallProperty(object obj, string name, out object ret, CallArg[] args)
+  { MemberContainer mc = MemberContainer.FromObject(obj);
+    object[] positional, values;
+    string[] names;
+    EvaluateCallArgs(args, out positional, out names, out values);
+    return names==null ? mc.CallProperty(obj, name, out ret, positional)
+                       : mc.CallProperty(obj, name, out ret, positional, names, values);
+  }
+
   public static object GetProperty(object obj, string name)
-  { MemberContainer mc = obj as MemberContainer;
-    return mc!=null ? mc.GetValue(name) : MemberContainer.FromObject(obj).GetValue(name, obj);
+  { return MemberContainer.FromObject(obj).GetProperty(obj, name);
   }
-
   public static bool GetProperty(object obj, string name, out object value)
-  { MemberContainer mc = obj as MemberContainer;
-    return mc!=null ? mc.GetValue(name, out value) : MemberContainer.FromObject(obj).GetValue(name, out value, obj);
+  { return MemberContainer.FromObject(obj).GetProperty(obj, name, out value);
   }
 
-  public static object GetPropertyValue(object value) { return GetPropertyValue(value, EmptyArray); }
-  public static object GetPropertyValue(object value, params object[] args)
-  { IProperty prop = value as IProperty;
-    return prop==null ? value : prop.Get(args);
+  public static void SetProperty(object value, object obj, string name)
+  { MemberContainer.FromObject(obj).SetProperty(obj, name, value);
+  }
+  public static void TrySetProperty(object value, object obj, string name)
+  { MemberContainer.FromObject(obj).TrySetProperty(obj, name, value);
   }
 
-  public static object GetSlot(object obj, string name) { return MemberContainer.FromObject(obj).GetSlot(name); }
-
+  public static object GetSlot(object obj, string name) { return MemberContainer.FromObject(obj).GetSlot(obj, name); }
   public static bool GetSlot(object obj, string name, out object value)
-  { return MemberContainer.FromObject(obj).GetSlot(name, out value);
+  { return MemberContainer.FromObject(obj).GetSlot(obj, name, out value);
+  }
+
+  public static void SetSlot(object value, object obj, string name)
+  { MemberContainer.FromObject(obj).SetSlot(obj, name, value);
+  }
+  public static bool TrySetSlot(object value, object obj, string name)
+  { return MemberContainer.FromObject(obj).TrySetSlot(obj, name, value);
   }
 
   public static object Invoke(object target, string name) { return Invoke(target, name, EmptyArray); }
@@ -1316,7 +1481,7 @@ public sealed class Ops
   }
 
   public static void SetMember(object obj, string name, object value)
-  { MemberContainer.FromObject(obj).SetSlot(name, value);
+  { MemberContainer.FromObject(obj).SetSlot(obj, name, value);
   }
 
   public static string Str(object obj) { return Options.Current.Language.Str(obj); }
@@ -1368,11 +1533,7 @@ public sealed class Ops
     { Complex c = (Complex)o;
       if(c.imag==0) return c.real;
     }
-
-    try { return Convert.ToDouble(o); }
-    catch(FormatException) { throw ValueError("string does not contain a valid float"); }
-    catch(OverflowException) { throw ValueError("too big for float"); }
-    catch(InvalidCastException) { throw TypeError("expected float, but got {0}", TypeName(o)); }
+    return Convert.ToDouble(o);
   }
 
   public static string ToHex(uint number, int minlen)
@@ -1392,81 +1553,53 @@ public sealed class Ops
   public static int ToInt(object o)
   { if(o is int) return (int)o;
 
-    try
-    { switch(Convert.GetTypeCode(o))
-      { case TypeCode.Boolean: return (bool)o ? 1 : 0;
-        case TypeCode.Byte: return (byte)o;
-        case TypeCode.Char: return (char)o;
-        case TypeCode.Decimal: return (int)(Decimal)o;
-        case TypeCode.Double: return checked((int)(double)o);
-        case TypeCode.Int16: return (short)o;
-        case TypeCode.Int64: return checked((int)(long)o);
-        case TypeCode.SByte: return (sbyte)o;
-        case TypeCode.Single: return checked((int)(float)o);
-        case TypeCode.String:
-          try { return int.Parse((string)o); }
-          catch(FormatException) { throw ValueError("string does not contain a valid int"); }
-        case TypeCode.UInt16: return (int)(ushort)o;
-        case TypeCode.UInt32: return checked((int)(uint)o);
-        case TypeCode.UInt64: return checked((int)(ulong)o);
-        default: return checked((int)Convert.ToSingle(o)); // we do it this way so it truncates
-      }
+    switch(Convert.GetTypeCode(o))
+    { case TypeCode.Boolean: return (bool)o ? 1 : 0;
+      case TypeCode.Byte: return (byte)o;
+      case TypeCode.Char: return (char)o;
+      case TypeCode.Decimal: return (int)(Decimal)o;
+      case TypeCode.Double: return checked((int)(double)o);
+      case TypeCode.Int16: return (short)o;
+      case TypeCode.Int64: return checked((int)(long)o);
+      case TypeCode.SByte: return (sbyte)o;
+      case TypeCode.Single: return checked((int)(float)o);
+      case TypeCode.String: return int.Parse((string)o);
+      case TypeCode.UInt16: return (int)(ushort)o;
+      case TypeCode.UInt32: return checked((int)(uint)o);
+      case TypeCode.UInt64: return checked((int)(ulong)o);
+      default: return checked((int)Convert.ToSingle(o)); // we do it this way so it truncates
     }
-    catch(FormatException) { throw ValueError("string does not contain a valid int"); }
-    catch(OverflowException) { goto toobig; }
-    catch(InvalidCastException) { throw TypeError("expected int, but got {0}", TypeName(o)); }
-    toobig: throw ValueError("too big for int");
   }
 
   public static long ToLong(object o)
-  { try
-    { switch(Convert.GetTypeCode(o))
-      { case TypeCode.Boolean: return (bool)o ? 1 : 0;
-        case TypeCode.Byte: return (byte)o;
-        case TypeCode.Char: return (char)o;
-        case TypeCode.Decimal: return (long)(Decimal)o;
-        case TypeCode.Double: return checked((long)(double)o);
-        case TypeCode.Int16: return (short)o;
-        case TypeCode.Int32: return (int)o;
-        case TypeCode.Int64: return (long)o;
-        case TypeCode.SByte: return (sbyte)o;
-        case TypeCode.Single: return checked((long)(float)o);
-        case TypeCode.String:
-          try { return long.Parse((string)o); }
-          catch(FormatException) { throw ValueError("string does not contain a valid long"); }
-        case TypeCode.UInt16: return (long)(ushort)o;
-        case TypeCode.UInt32: return (long)(uint)o;
-        case TypeCode.UInt64: return checked((long)(ulong)o);
-        default: return checked((long)Convert.ToSingle(o));
-      }
+  { switch(Convert.GetTypeCode(o))
+    { case TypeCode.Boolean: return (bool)o ? 1 : 0;
+      case TypeCode.Byte: return (byte)o;
+      case TypeCode.Char: return (char)o;
+      case TypeCode.Decimal: return (long)(Decimal)o;
+      case TypeCode.Double: return checked((long)(double)o);
+      case TypeCode.Int16: return (short)o;
+      case TypeCode.Int32: return (int)o;
+      case TypeCode.Int64: return (long)o;
+      case TypeCode.SByte: return (sbyte)o;
+      case TypeCode.Single: return checked((long)(float)o);
+      case TypeCode.String: return long.Parse((string)o);
+      case TypeCode.UInt16: return (long)(ushort)o;
+      case TypeCode.UInt32: return (long)(uint)o;
+      case TypeCode.UInt64: return checked((long)(ulong)o);
+      default: return checked((long)Convert.ToSingle(o));
     }
-    catch(FormatException) { throw ValueError("string does not contain a valid long"); }
-    catch(OverflowException) { throw ValueError("too big for long"); } // TODO: allow conversion to long integer?
-    catch(InvalidCastException) { throw TypeError("expected long, but got {0}", TypeName(o)); }
-  }
-
-  public static TypeErrorException TypeError(string message) { return new TypeErrorException(message); }
-  public static TypeErrorException TypeError(string format, params object[] args)
-  { return new TypeErrorException(string.Format(format, args));
   }
 
   public static string TypeName(object o) { return TypeName(o==null ? null : o.GetType()); }
   public static string TypeName(ReflectedType type) { return TypeName(type.Type); }
   public static string TypeName(Type type) { return Options.Current.Language.TypeName(type); }
 
-  public static ValueErrorException ValueError(string message)
-  { return new ValueErrorException(message);
-  }
-  public static ValueErrorException ValueError(string format, params object[] args)
-  { return new ValueErrorException(string.Format(format, args));
-  }
-
   public static readonly object Missing = new Singleton("<Missing>");
   public static readonly object FALSE=false, TRUE=true;
   public static readonly object[] EmptyArray = new object[0];
 
   [ThreadStatic] public static Template CurrentFunction;
-  [ThreadStatic] public static object LastPtr;
 
   static bool IsIn(Type[] typeArr, Type type)
   { for(int i=0; i<typeArr.Length; i++) if(typeArr[i]==type) return true;

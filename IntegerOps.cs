@@ -348,7 +348,7 @@ public sealed class IntegerOps
         if(b is Integer)
         { Integer bi = (Integer)b;
           if(bi.Sign<0) return Math.Pow(a.ToDouble(), bi.ToDouble());
-          if(bi>uint.MaxValue) throw Ops.ValueError("exponent too big to fit into uint");
+          if(bi>uint.MaxValue) throw new OverflowException("exponent too big to fit into uint");
           bv = bi.ToUInt32();
         }
         else if(b is Complex)
@@ -373,7 +373,7 @@ public sealed class IntegerOps
       case TypeCode.UInt32: bv = (uint)b; break;
       case TypeCode.UInt64:
       { ulong v = (ulong)b;
-        if(v>uint.MaxValue) throw Ops.ValueError("exponent too big to fit into uint");
+        if(v>uint.MaxValue) throw new OverflowException("exponent too big to fit into uint");
         bv = (long)v;
         break;
       }
@@ -381,7 +381,7 @@ public sealed class IntegerOps
     }
 
     if(bv<0) return Math.Pow(a.ToDouble(), bv);
-    if(bv>uint.MaxValue) throw Ops.ValueError("exponent too big to fit into uint");
+    if(bv>uint.MaxValue) throw new OverflowException("exponent too big to fit into uint");
     return a.Pow((uint)bv);
   }
 
@@ -396,8 +396,8 @@ public sealed class IntegerOps
       case TypeCode.Object:
         if(b is Integer)
         { Integer bi = (Integer)b;
-          if(bi.Sign<0) throw Ops.ValueError("the exponent cannot be negative for ternary pow");
-          if(bi>uint.MaxValue) throw Ops.ValueError("exponent too big to fit into uint");
+          if(bi.Sign<0) throw new ArgumentException("the exponent cannot be negative for ternary pow");
+          if(bi>uint.MaxValue) throw new OverflowException("exponent too big to fit into uint");
           bv = bi.ToUInt32();
         }
         else
@@ -411,16 +411,16 @@ public sealed class IntegerOps
       case TypeCode.UInt32: bv = (uint)b; break;
       case TypeCode.UInt64:
       { ulong v = (ulong)b;
-        if(v>uint.MaxValue) throw Ops.ValueError("exponent too big to fit into uint");
+        if(v>uint.MaxValue) throw new OverflowException("exponent too big to fit into uint");
         bv = (long)v;
         break;
       }
-      default: throw Ops.TypeError("invalid operand types for ternary pow: '{0}', '{1}', and '{2}'",
-                                   Ops.TypeName(a), Ops.TypeName(b), Ops.TypeName(c));
+      default: throw Ops.ArgError("invalid operand types for ternary pow: '{0}', '{1}', and '{2}'",
+                                  Ops.TypeName(a), Ops.TypeName(b), Ops.TypeName(c));
     }
 
-    if(bv<0) throw Ops.ValueError("the exponent cannot be negative for ternary pow");
-    if(bv>uint.MaxValue) throw Ops.ValueError("exponent too big to fit into uint");
+    if(bv<0) throw new ArgumentException("the exponent cannot be negative for ternary pow");
+    if(bv>uint.MaxValue) throw new OverflowException("exponent too big to fit into uint");
     return Reduce(a.Pow((uint)bv, c));
   }
 

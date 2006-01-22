@@ -29,6 +29,8 @@ using System.Reflection.Emit;
 // TODO: optimize code generation by not creating temp slots to hold the value of a node that's just a local variable
 //       lookup or a constant expression
 // TODO: implement some basic block analysis to detect and eliminate unreachable code
+// FIXME: handle Interrupt nodes like we handle stack-clearing nodes (perhaps literally handle them the same way. after
+//        all, YieldNodes /do/ clear the stack)
 namespace Scripting
 {
 
@@ -178,49 +180,49 @@ public abstract class Language
   #region Ops
   #region Standard ops
   public virtual object Add(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for +: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for +: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object BitwiseAnd(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for &: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for &: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object BitwiseOr(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for |: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for |: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object BitwiseNegate(object a)
-  { throw Ops.TypeError("unsupported operand type for ~: '{0}'", Ops.TypeName(a));
+  { throw Ops.ArgError("unsupported operand type for ~: '{0}'", Ops.TypeName(a));
   }
   public virtual object BitwiseXor(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for ^: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for ^: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual int Compare(object a, object b)
-  { throw Ops.TypeError("can't compare types: {0} and {1}", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("can't compare types: {0} and {1}", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object Divide(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for /: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for /: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object FloorDivide(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for //: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for //: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object LeftShift(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for <<: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for <<: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object Modulus(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for %: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for %: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object Multiply(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for *: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for *: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object Negate(object a)
-  { throw Ops.TypeError("unsupported operand type for unary -: '{0}'", Ops.TypeName(a));
+  { throw Ops.ArgError("unsupported operand type for unary -: '{0}'", Ops.TypeName(a));
   }
   public virtual object Power(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for **: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for **: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object RightShift(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for >>: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for >>: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   public virtual object Subtract(object a, object b)
-  { throw Ops.TypeError("unsupported operand types for -: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
+  { throw Ops.ArgError("unsupported operand types for -: '{0}' and '{1}'", Ops.TypeName(a), Ops.TypeName(b));
   }
   #endregion
   
@@ -688,7 +690,7 @@ public sealed class AST
     4. Resolves references to all names used within the function
     5. Sets node flags by calling node.SetFlags() [from the leaves to the root]
     6. Calls node.Optimize() if optimization is enabled [from the leaves to the root]
-    7. Creates shared CachePromise objects for equivalent MemberNodes
+    7. Creates shared CachePromise objects for equivalent GetSlotNodes
     8. Sets the Parent fields of BlockNodes
     9. Finds all jump nodes (BreakNode and RestartNode) within blocks and updates them with information about whether
        they need to use the Leave opcode, etc.
@@ -824,18 +826,17 @@ public sealed class AST
       else if(!inCatch && node is ThrowNode && ((ThrowNode)node).Exception==null)
         throw Ops.SyntaxError(node, "bare throw form is only allowed within a catch statement");
       else if(node is ExceptionNode)
-      { ExceptionNode oldTry = inTry;
-        inTry = (ExceptionNode)node;
+      { ExceptionNode oldTry = inTry, newTry = inTry = (ExceptionNode)node;
 
         int yieldStart = yields==null ? 0 : yields.Count;
-        inTry.Body.Walk(this);
+        newTry.Body.Walk(this);
         if(yields!=null && yields.Count!=yieldStart)
-        { inTry.Yields = new YieldNode[yields.Count-yieldStart];
-          yields.CopyTo(yieldStart, inTry.Yields, 0, yields.Count-yieldStart);
+        { newTry.Yields = new YieldNode[yields.Count-yieldStart];
+          yields.CopyTo(yieldStart, newTry.Yields, 0, yields.Count-yieldStart);
         }
 
-        if(inTry.Excepts!=null)
-          foreach(Except ex in inTry.Excepts)
+        if(newTry.Excepts!=null)
+          foreach(Except ex in newTry.Excepts)
           { if(ex.Types!=null) foreach(Node n in ex.Types) n.Walk(this);
             if(ex.Var!=null)
             { bound.Add(ex.Var);
@@ -850,9 +851,9 @@ public sealed class AST
             }
           }
 
-        inTry.WalkFinally(this);
+        newTry.WalkFinally(this);
         inTry = oldTry;
-        inTry.WalkElse(this);
+        newTry.WalkElse(this);
 
         return false;
       }
@@ -923,12 +924,15 @@ public sealed class AST
         else if(node is YieldNode)
         { if(gen==null) throw Ops.SyntaxError(node, "yield clauses disallowed outside generators");
           YieldNode yn = (YieldNode)node;
+          yn.Generator   = gen;
           yn.YieldNumber = (uint)yields.Add(yn);
           
           int numTries = 0;
           ExceptionNode ex = inTry;
           while(ex!=null) { numTries++; ex=ex.InTry; }
           
+          // TODO: there's a potential optimization here. if the YieldNode is at the tail of a try block, we can
+          // avoid jumping back into the try block (after the YieldNode) only to immediately exit.
           yn.Targets = new YieldNode.Target[numTries+1];
           ex = inTry;
           for(int i=0; i<numTries; ex=ex.InTry,i++) yn.Targets[i].ExceptNode = ex;
@@ -963,26 +967,7 @@ public sealed class AST
       else if(node is BlockNode) blocks.RemoveAt(blocks.Count-1);
 
       node.SetFlags();
-
-      if(optimize!=OptimizeType.None)
-      { node.Optimize();
-
-        if(optimize==OptimizeType.Speed)
-        { MemberNode an = node as MemberNode;
-          if(an!=null && an.EnableCache && an.Value is VariableNode && an.Members.IsConstant)
-          { object obj = an.Members.Evaluate();
-            if(!(obj is string))
-              throw new SyntaxErrorException("MemberNode expects a string value as the second argument");
-
-            if(memberNodes==null) memberNodes = new Hashtable();
-            AccessKey key = new AccessKey(((VariableNode)an.Value).Name, (string)obj);
-            MemberNode.CachePromise promise = (MemberNode.CachePromise)memberNodes[key];
-            if(promise==null) memberNodes[key] = promise = new MemberNode.CachePromise();
-            an.Cache = promise;
-          }
-        }
-      }
-
+      if(optimize!=OptimizeType.None) node.Optimize();
       node.Postprocess();
     }
 
@@ -1016,30 +1001,9 @@ public sealed class AST
       return false;
     }
 
-    #region AccessKey
-    struct AccessKey
-    { public AccessKey(Name name, string members) { Name=name; Members=members; }
-
-      public override bool Equals(object obj)
-      { AccessKey other = (AccessKey)obj;
-        return (Name==other.Name ||
-                Name.Depth==Name.Global && other.Name.Depth==Name.Global && Name.String==other.Name.String) &&
-               Members==other.Members;
-      }
-
-      public override int GetHashCode()
-      { return Name.Depth ^ Name.Index ^ Name.String.GetHashCode() ^ Members.GetHashCode();
-      }
-
-      public Name Name;
-      public string Members;
-    }
-    #endregion
-
     LambdaNode func, top;
     GeneratorNode gen;
     ExceptionNode inTry;
-    Hashtable memberNodes;
     CachedArray blocks, bound, free, values, closedVars, closedParams, yields;
     int boundStart, freeStart, blockStart, yieldStart;
     OptimizeType optimize;
@@ -1223,16 +1187,9 @@ public abstract class Node
 
   protected void TailReturn(CodeGenerator cg)
   { if(Tail)
-    { if(cg.IsGenerator)
-      { if(InTry==null)
-        { cg.EmitBool(false);
-          cg.EmitReturn();
-        }
-        else throw new NotImplementedException(); // FIXNOW: handle returning from a try block
-      }
-      else if(InTry==null) cg.EmitReturn();
+    { if(InTry==null) cg.EmitReturn();
       else
-      { InTry.ReturnSlot.EmitSet(cg);
+      { if(InTry.ReturnSlot!=null) InTry.ReturnSlot.EmitSet(cg);
         cg.ILG.Emit(OpCodes.Leave, InTry.LeaveLabel);
       }
     }
@@ -1459,12 +1416,201 @@ public class BreakNode : JumpNode
 }
 #endregion
 
-#region CallNode
-public sealed class CallNode : Node
-{ public CallNode(Node func, params Node[] nodes) : this(func, NodesToArgs(nodes)) { }
-  public CallNode(Node func, params Argument[] args)
-  { Function=func; Args=args;
+#region CallNodeBase
+public abstract class CallNodeBase : Node
+{ protected CallNodeBase() { }
+  protected CallNodeBase(Argument[] args) { SetArgs(args); }
 
+  public Node[] GetArgNodes() { return GetArgNodes(true); }
+  public Node[] GetArgNodes(bool throwOnComplexArg)
+  { Node[] nodes = new Node[Args.Length];
+    for(int i=0; i<Args.Length; i++)
+      if(throwOnComplexArg && (Args[i].Type!=ArgType.Normal || Args[i].Name!=null))
+        throw new ArgumentException("Unexpected list or dict argument");
+      else nodes[i] = Args[i].Expression;
+    return nodes;
+  }
+
+  public Argument[] Args;
+  
+  protected void EmitCallArgs(CodeGenerator cg, Node[] nodes, params Slot[] emitBefore)
+  { Slot atmp = null;
+    int ri=0, rsi=0, runlen=0;
+    bool hasTryArg=HasTryArg(), keepAround=HasInterruptArg();
+
+    cg.EmitNewArray(typeof(CallArg), NumRuns);
+    if(hasTryArg) { atmp=cg.AllocLocalTemp(typeof(CallArg[]), keepAround); atmp.EmitSet(cg); }
+
+    hasTryArg = false;
+    for(int i=0; i<Args.Length; i++) // positional args
+    { if(Args[i].Name!=null || Args[i].Type==ArgType.Dict) continue;
+      if(Args[i].Type==ArgType.Normal)
+      { if(Args[i].Expression.ClearsStack) hasTryArg = true;
+        runlen++;
+      }
+      else
+      { if(runlen!=0) EmitAndStoreRun(cg, atmp, ri++, nodes, hasTryArg, rsi, runlen, i);
+
+        cg.Dup();
+        cg.EmitInt(ri++);
+        cg.ILG.Emit(OpCodes.Ldelema, typeof(CallArg));
+        cg.Dup();
+        Args[i].Expression.Emit(cg);
+        cg.EmitFieldSet(typeof(CallArg), "Value");
+        cg.EmitFieldGet(typeof(CallArg), "ListType");
+        cg.EmitFieldSet(typeof(CallArg), "Type");
+
+        runlen=0; rsi=i+1;
+      }
+    }
+    if(runlen!=0) EmitAndStoreRun(cg, atmp, ri++, nodes, hasTryArg, rsi, runlen, Args.Length);
+    
+    if(NumNamed!=0) // then named arguments
+    { Slot values;
+      if(HasNamedTryArg()) values = EmitKeywordValues(cg, true);
+      else values = null;
+
+      if(atmp!=null) atmp.EmitGet(cg);
+      else cg.Dup();
+      cg.EmitInt(ri++);
+      cg.ILG.Emit(OpCodes.Ldelema, typeof(CallArg));
+      cg.Dup();
+      EmitKeywordNames(cg);
+      cg.EmitFieldSet(typeof(CallArg), "Value");
+      if(values==null) EmitKeywordValues(cg, false);
+      else
+      { values.EmitGet(cg);
+        cg.FreeLocalTemp(values);
+      }
+      cg.EmitFieldSet(typeof(CallArg), "Type");
+    }
+    
+    for(int i=0; i<Args.Length; i++)
+      if(Args[i].Type==ArgType.Dict)
+      { Slot value;
+        if(!Args[i].Expression.ClearsStack) value = null;
+        else
+        { Args[i].Expression.Emit(cg);
+          value = cg.AllocLocalTemp(typeof(object), keepAround);
+          value.EmitSet(cg);
+        }
+        
+        if(atmp!=null) atmp.EmitGet(cg);
+        else cg.Dup();
+        cg.EmitInt(ri++);
+        cg.ILG.Emit(OpCodes.Ldelema, typeof(CallArg));
+        cg.Dup();
+        if(value==null) Args[i].Expression.Emit(cg);
+        else
+        { value.EmitGet(cg);
+          if(!keepAround) cg.FreeLocalTemp(value);
+        }
+        cg.EmitFieldSet(typeof(CallArg), "Value");
+        cg.EmitFieldGet(typeof(CallArg), "DictType");
+        cg.EmitFieldSet(typeof(CallArg), "Type");
+      }
+    
+    foreach(Slot s in emitBefore) s.EmitGet(cg);
+    if(atmp!=null) atmp.EmitGet(cg);
+  }
+
+  protected void EmitPosNamesValues(CodeGenerator cg, Node[] nodes, params Slot[] emitBefore)
+  { Slot atmp = null;
+    bool hasTryArg = HasTryArg();
+    if(!hasTryArg)
+    { cg.EmitObjectArray(nodes, 0, nodes.Length-NumNamed);
+      EmitKeywordNames(cg);
+      EmitKeywordValues(cg, false);
+    }
+    else if(HasNamedTryArg())
+    { hasTryArg = HasPlainTryArg();
+      Slot values = EmitKeywordValues(cg, true);
+      if(hasTryArg) atmp = cg.AllocObjectArray(nodes, 0, nodes.Length-NumNamed);
+      foreach(Slot s in emitBefore) s.EmitGet(cg);
+      if(hasTryArg) atmp.EmitGet(cg);
+      else cg.EmitObjectArray(nodes, 0, nodes.Length-NumNamed);
+      EmitKeywordNames(cg);
+      values.EmitGet(cg);
+      cg.FreeLocalTemp(values);
+    }
+    else
+    { atmp = cg.AllocObjectArray(nodes, 0, nodes.Length-NumNamed);  
+      foreach(Slot s in emitBefore) s.EmitGet(cg);
+      atmp.EmitGet(cg);
+      EmitKeywordNames(cg);
+      EmitKeywordValues(cg, false);
+    }
+  }
+
+  protected CallArg[] EvaluateCallArgs(Node[] nodes)
+  { int ri=0, rsi=0, runlen=0;
+    CallArg[] cargs = new CallArg[NumRuns];
+
+    for(int i=0; i<Args.Length; i++) // positional args
+      if(Args[i].Name!=null || Args[i].Type==ArgType.Dict) continue;
+      else if(Args[i].Type==ArgType.Normal) runlen++;
+      else
+      { if(runlen!=0) AddRun(cargs, ri++, nodes, rsi, runlen, i);
+        cargs[ri++] = new CallArg(Args[i].Expression.Evaluate(), CallArg.ListType);
+        runlen=0; rsi=i+1;
+      }
+    if(runlen!=0) AddRun(cargs, ri++, nodes, rsi, runlen, Args.Length);
+    
+    if(NumNamed!=0) // named arguments
+    { string[] names = new string[NumNamed];
+      object[] values = new object[NumNamed];
+      for(int i=0,j=0; i<Args.Length; i++)
+        if(Args[i].Name!=null)
+        { names[j] = Args[i].Name;
+          values[j++] = Args[i].Expression.Evaluate();
+        }
+      cargs[ri++] = new CallArg(names, values);
+    }
+    
+    if(NumDicts!=0)
+      for(int i=0; i<Args.Length; i++)
+        if(Args[i].Type==ArgType.Dict)
+          cargs[ri++] = new CallArg(Args[i].Expression.Evaluate(), CallArg.DictType);
+  
+    return cargs;
+  }
+
+  protected void EvaluatePosNamesValues(out object[] pos, out string[] names, out object[] values)
+  { pos    = new object[Args.Length-NumNamed];
+    names  = new string[NumNamed];
+    values = new object[NumNamed];
+    for(int i=0,j=0,k=0; i<Args.Length; i++)
+      if(Args[i].Name==null) pos[j++] = Args[i].Expression.Evaluate();
+      else
+      { names[k] = Args[i].Name;
+        values[k++] = Args[i].Expression.Evaluate();
+      }
+  }
+
+  protected bool HasInterruptArg()
+  { for(int i=0; i<Args.Length; i++) if(Args[i].Expression.Interrupts) return true;
+    return false;
+  }
+
+  protected bool HasNamedTryArg()
+  { for(int i=0; i<Args.Length; i++)
+      if(Args[i].Name!=null && Args[i].Expression.ClearsStack) return true;
+    return false;
+  }
+
+  protected bool HasPlainTryArg()
+  { for(int i=0; i<Args.Length; i++)
+      if(Args[i].Name==null && Args[i].Type==ArgType.Normal && Args[i].Expression.ClearsStack) return true;
+    return false;
+  }
+
+  protected bool HasTryArg()
+  { for(int i=0; i<Args.Length; i++) if(Args[i].Expression.ClearsStack) return true;
+    return false;
+  }
+
+  protected void SetArgs(Argument[] args)
+  { NumNamed = NumRuns = NumLists = NumDicts = 0;
     int runlen = 0;
     foreach(Argument a in Args)
       switch(a.Type)
@@ -1483,321 +1629,9 @@ public sealed class CallNode : Node
     NumRuns += NumLists + NumDicts;
   }
 
-  public void CheckArity(int num) { CheckArity(num, num); }
-  public void CheckArity(int min, int max) { Ops.CheckArity(((VariableNode)Function).Name.String, Args.Length, min, max); }
+  protected int NumLists, NumDicts, NumRuns, NumNamed;
 
-  public void CheckArity(string name, int num) { Ops.CheckArity(name, Args.Length, num, num); }
-  public void CheckArity(string name, int min, int max) { Ops.CheckArity(name, Args.Length, min, max); }
-
-  #region Emit
-  public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(IsConstant)
-    { EmitConstant(cg, Evaluate(), ref etype);
-      TailReturn(cg);
-      return;
-    }
-
-    cg.MarkPosition(this);
-
-    bool hasTryArg = HasTryArg();
-    if(hasTryArg || NumNamed!=0 || NumLists!=0 || NumDicts!=0) goto normal;
-
-    if(Options.Current.OptimizeAny && Function is VariableNode)
-    { VariableNode vn = (VariableNode)Function;
-      if(Tail && FuncNameMatch(vn.Name, InFunc)) // see if we can tailcall ourselves with a branch
-      { int positional = InFunc.Parameters.Length-(InFunc.HasList ? 1 : 0)-(InFunc.HasDict ? 1 : 0);
-        if(Args.Length<positional)
-          throw new TargetParameterCountException(
-            string.Format("{0} expects {1}{2} args, but is being passed {3}",
-                          vn.Name, InFunc.HasList ? "at least " : "", positional, Args.Length));
-        // TODO: handle arguments that clear the stack
-        for(int i=0; i<positional; i++) Args[i].Expression.Emit(cg);
-        if(InFunc.HasList)
-          Options.Current.Language.EmitPackedArguments(cg, GetArgNodes(), positional, Args.Length-positional);
-        if(InFunc.HasDict) Options.Current.Language.EmitNewKeywordDict(cg);
-        for(int i=InFunc.Parameters.Length-1; i>=0; i--) cg.EmitSet(InFunc.Parameters[i].Name);
-        cg.ILG.Emit(InTry==null ? OpCodes.Br : OpCodes.Leave, InFunc.StartLabel);
-        etype = typeof(object);
-        return;
-      }
-      else if(Options.Current.Language.InlineFunction(cg, vn.Name.String, this, ref etype))
-      { TailReturn(cg);
-        return;
-      }
-    }
-
-    normal:
-    Slot ftmp=null, atmp=null;
-    bool keepAround = HasInterruptArg();
-
-    // FIXME: we need to preserve the left-to-right evaluation order
-    Node[] nodes = GetArgNodes(false);
-    if(NumLists==0 && NumDicts==0)
-    { if(NumNamed==0)
-      { Function.EmitTyped(cg, typeof(IProcedure));
-        if(!hasTryArg) cg.EmitObjectArray(nodes);
-        else
-        { ftmp = cg.AllocLocalTemp(typeof(IProcedure), keepAround);
-          ftmp.EmitSet(cg);
-          atmp = cg.AllocObjectArray(nodes);
-          ftmp.EmitGet(cg);
-          atmp.EmitGet(cg);
-        }
-      }
-      else
-      { Function.EmitTyped(cg, typeof(IFancyProcedure));
-        if(!hasTryArg)
-        { cg.EmitObjectArray(nodes, 0, nodes.Length-NumNamed);
-          EmitKeywordNames(cg);
-          EmitKeywordValues(cg, false);
-        }
-        else
-        { ftmp = cg.AllocLocalTemp(typeof(IFancyProcedure), keepAround);
-          ftmp.EmitSet(cg);
-          if(HasNamedTryArg())
-          { hasTryArg = HasPlainTryArg();
-            Slot values = EmitKeywordValues(cg, true);
-            if(hasTryArg) atmp = cg.AllocObjectArray(nodes, 0, nodes.Length-NumNamed);
-
-            ftmp.EmitGet(cg);
-            if(hasTryArg) atmp.EmitGet(cg);
-            else cg.EmitObjectArray(nodes, 0, nodes.Length-NumNamed);
-            EmitKeywordNames(cg);
-            values.EmitGet(cg);
-            cg.FreeLocalTemp(values);
-          }
-          else
-          { atmp = cg.AllocObjectArray(nodes, 0, nodes.Length-NumNamed);  
-            ftmp.EmitGet(cg);
-            atmp.EmitGet(cg);
-            EmitKeywordNames(cg);
-            EmitKeywordValues(cg, false);
-          }
-        }
-      }
-
-      if(Tail && InTry==null) cg.ILG.Emit(OpCodes.Tailcall);
-      if(NumNamed==0) cg.EmitCall(typeof(IProcedure), "Call");
-      else cg.EmitCall(typeof(IFancyProcedure), "Call", typeof(object[]), typeof(string[]), typeof(object[]));
-    }
-    else
-    { int ri=0, rsi=0, runlen=0;
-
-      Function.Emit(cg);
-      if(hasTryArg)
-      { ftmp = cg.AllocLocalTemp(typeof(object), keepAround);
-        ftmp.EmitSet(cg);
-      }
-
-      cg.EmitNewArray(typeof(CallArg), NumRuns);
-      if(hasTryArg) { atmp=cg.AllocLocalTemp(typeof(CallArg[]), keepAround); atmp.EmitSet(cg); }
-
-      hasTryArg = false;
-      for(int i=0; i<Args.Length; i++) // positional args
-      { if(Args[i].Name!=null || Args[i].Type==ArgType.Dict) continue;
-        if(Args[i].Type==ArgType.Normal)
-        { if(Args[i].Expression.ClearsStack) hasTryArg = true;
-          runlen++;
-        }
-        else
-        { if(runlen!=0) EmitAndStoreRun(cg, atmp, ri++, nodes, hasTryArg, rsi, runlen, i);
-
-          cg.Dup();
-          cg.EmitInt(ri++);
-          cg.ILG.Emit(OpCodes.Ldelema, typeof(CallArg));
-          cg.Dup();
-          Args[i].Expression.Emit(cg);
-          cg.EmitFieldSet(typeof(CallArg), "Value");
-          cg.EmitFieldGet(typeof(CallArg), "ListType");
-          cg.EmitFieldSet(typeof(CallArg), "Type");
-
-          runlen=0; rsi=i+1;
-        }
-      }
-      if(runlen!=0) EmitAndStoreRun(cg, atmp, ri++, nodes, hasTryArg, rsi, runlen, Args.Length);
-      
-      if(NumNamed!=0) // then named arguments
-      { Slot values;
-        if(HasNamedTryArg()) values = EmitKeywordValues(cg, true);
-        else values = null;
-
-        if(atmp!=null) atmp.EmitGet(cg);
-        else cg.Dup();
-        cg.EmitInt(ri++);
-        cg.ILG.Emit(OpCodes.Ldelema, typeof(CallArg));
-        cg.Dup();
-        EmitKeywordNames(cg);
-        cg.EmitFieldSet(typeof(CallArg), "Value");
-        if(values==null) EmitKeywordValues(cg, false);
-        else
-        { values.EmitGet(cg);
-          cg.FreeLocalTemp(values);
-        }
-        cg.EmitFieldSet(typeof(CallArg), "Type");
-      }
-      
-      for(int i=0; i<Args.Length; i++)
-        if(Args[i].Type==ArgType.Dict)
-        { Slot value;
-          if(!Args[i].Expression.ClearsStack) value = null;
-          else
-          { Args[i].Expression.Emit(cg);
-            value = cg.AllocLocalTemp(typeof(object), keepAround);
-            value.EmitSet(cg);
-          }
-          
-          if(atmp!=null) atmp.EmitGet(cg);
-          else cg.Dup();
-          cg.EmitInt(ri++);
-          cg.ILG.Emit(OpCodes.Ldelema, typeof(CallArg));
-          cg.Dup();
-          if(value==null) Args[i].Expression.Emit(cg);
-          else
-          { value.EmitGet(cg);
-            if(!keepAround) cg.FreeLocalTemp(value);
-          }
-          cg.EmitFieldSet(typeof(CallArg), "Value");
-          cg.EmitFieldGet(typeof(CallArg), "DictType");
-          cg.EmitFieldSet(typeof(CallArg), "Type");
-        }
-      
-      if(ftmp!=null) ftmp.EmitGet(cg);
-      if(atmp!=null) atmp.EmitGet(cg);
-      if(Tail && InTry==null) cg.ILG.Emit(OpCodes.Tailcall);
-      cg.EmitCall(typeof(Ops), "Call", typeof(object), typeof(CallArg[]));
-    }
-
-    TailReturn(cg);
-    if(!keepAround)
-    { if(ftmp!=null) cg.FreeLocalTemp(ftmp);
-      if(atmp!=null) cg.FreeLocalTemp(atmp);
-    }
-
-    etype = typeof(object);
-  }
-  #endregion
-
-  #region Evaluate
-  public override object Evaluate()
-  { if(IsConstant)
-    { object result;
-      if(Options.Current.Language.EvaluateConstantFunction(((VariableNode)Function).Name.String,
-                                                           GetArgNodes(), out result))
-        return result;
-    }
-
-    IProcedure func = Ops.ExpectProcedure(Function.Evaluate());
-    if(Args.Length==0) func.Call(Ops.EmptyArray);
-    
-    Node[] nodes = GetArgNodes();
-    if(NumLists==0 && NumDicts==0)
-    { if(NumNamed==0) return func.Call(MakeObjectArray(nodes));
-      else
-      { object[] pos=new object[Args.Length-NumNamed], values=new object[NumNamed];
-        string[] names = new string[NumNamed];
-        for(int i=0,j=0,k=0; i<Args.Length; i++)
-          if(Args[i].Name==null) pos[j++] = Args[i].Expression.Evaluate();
-          else
-          { names[k] = Args[i].Name;
-            values[k++] = Args[i].Expression.Evaluate();
-          }
-        return Ops.ExpectFancyProcedure(func).Call(pos, names, values);
-      }
-    }
-    else
-    { int ri=0, rsi=0, runlen=0;
-      CallArg[] cargs = new CallArg[NumRuns];
-      
-      for(int i=0; i<Args.Length; i++) // positional args
-        if(Args[i].Name!=null || Args[i].Type==ArgType.Dict) continue;
-        else if(Args[i].Type==ArgType.Normal) runlen++;
-        else
-        { if(runlen!=0) AddRun(cargs, ri++, nodes, rsi, runlen, i);
-          cargs[ri++] = new CallArg(Args[i].Expression.Evaluate(), CallArg.ListType);
-          runlen=0; rsi=i+1;
-        }
-      if(runlen!=0) AddRun(cargs, ri++, nodes, rsi, runlen, Args.Length);
-      
-      if(NumNamed!=0) // named arguments
-      { string[] names = new string[NumNamed];
-        object[] values = new object[NumNamed];
-        for(int i=0,j=0; i<Args.Length; i++)
-          if(Args[i].Name!=null)
-          { names[j] = Args[i].Name;
-            values[j++] = Args[i].Expression.Evaluate();
-          }
-        cargs[ri++] = new CallArg(names, values);
-      }
-      
-      if(NumDicts!=0)
-        for(int i=0; i<Args.Length; i++)
-          if(Args[i].Type==ArgType.Dict)
-            cargs[ri++] = new CallArg(Args[i].Expression.Evaluate(), CallArg.DictType);
-    
-      return Ops.Call(func, cargs);
-    }
-  }
-  #endregion
-
-  public Node[] GetArgNodes() { return GetArgNodes(true); }
-  public Node[] GetArgNodes(bool throwOnComplexArg)
-  { Node[] nodes = new Node[Args.Length];
-    for(int i=0; i<Args.Length; i++)
-      if(throwOnComplexArg && (Args[i].Type!=ArgType.Normal || Args[i].Name!=null))
-        throw new ArgumentException("Unexpected list or dict argument");
-      else nodes[i] = Args[i].Expression;
-    return nodes;
-  }
-
-  #region GetNodeType
-  public override Type GetNodeType()
-  { if(Options.Current.OptimizeSpeed && !HasTryArg() && NumNamed==0 && NumLists==0 && NumDicts==0 &&
-       Function is VariableNode)
-    { string name = ((VariableNode)Function).Name.String;
-      Language lang = Options.Current.Language;
-      if(lang.IsConstantFunction(name)) return lang.GetInlinedResultType(name);
-    }
-    return typeof(object);
-  }
-  #endregion
-
-  public override void MarkTail(bool tail)
-  { Tail = tail;
-    Function.MarkTail(false);
-    foreach(Argument a in Args) a.Expression.MarkTail(false);
-  }
-
-  public override void Optimize()
-  { bool isconst = true;
-    foreach(Argument a in Args) if(!a.Expression.IsConstant) { isconst=false; break; }
-    IsConstant = isconst && Function is VariableNode &&
-                 Options.Current.Language.IsConstantFunction(((VariableNode)Function).Name.String);
-  }
-
-  public override void SetFlags()
-  { bool clears=Function.ClearsStack, interrupts=Function.Interrupts;
-    foreach(Argument a in Args)
-    { if(a.Expression.ClearsStack) clears = true;
-      if(a.Expression.Interrupts) interrupts = true;
-    }
-    ClearsStack = clears;
-    Interrupts  = interrupts;
-  }
-
-  public override void Walk(IWalker w)
-  { if(w.Walk(this))
-    { Function.Walk(w);
-      foreach(Argument a in Args) a.Expression.Walk(w);
-    }
-    w.PostWalk(this);
-  }
-
-  public readonly Node Function;
-  public readonly Argument[] Args;
-  public readonly int NumLists, NumDicts, NumRuns, NumNamed;
-  public LambdaNode InFunc;
-
-  public static Argument[] NodesToArgs(Node[] nodes)
+  protected static Argument[] NodesToArgs(Node[] nodes)
   { if(nodes==null) return null;
     Argument[] args = new Argument[nodes.Length];
     for(int i=0; i<nodes.Length; i++) args[i] = new Argument(nodes[i]);
@@ -1864,28 +1698,180 @@ public sealed class CallNode : Node
       if(Args[i].Name!=null) nodes[j++] = Args[i].Expression;
     return cg.EmitObjectArray(nodes, allocate);
   }
+}
+#endregion
 
-  bool HasInterruptArg()
-  { for(int i=0; i<Args.Length; i++) if(Args[i].Expression.Interrupts) return true;
-    return false;
+#region CallNode
+public sealed class CallNode : CallNodeBase
+{ public CallNode(Node func, params Node[] nodes) : this(func, NodesToArgs(nodes)) { }
+  public CallNode(Node func, params Argument[] args) : base(args) { Function = func; }
+
+  public void CheckArity(int num) { CheckArity(num, num); }
+  public void CheckArity(int min, int max)
+  { Ops.CheckArity(((VariableNode)Function).Name.String, Args.Length, min, max);
   }
 
-  bool HasNamedTryArg()
-  { for(int i=0; i<Args.Length; i++)
-      if(Args[i].Name!=null && Args[i].Expression.ClearsStack) return true;
-    return false;
+  public void CheckArity(string name, int num) { Ops.CheckArity(name, Args.Length, num, num); }
+  public void CheckArity(string name, int min, int max) { Ops.CheckArity(name, Args.Length, min, max); }
+
+  #region Emit
+  public override void Emit(CodeGenerator cg, ref Type etype)
+  { if(IsConstant)
+    { EmitConstant(cg, Evaluate(), ref etype);
+      TailReturn(cg);
+      return;
+    }
+
+    cg.MarkPosition(this);
+
+    bool hasTryArg = HasTryArg();
+    if(hasTryArg || NumNamed!=0 || NumLists!=0 || NumDicts!=0) goto normal;
+
+    if(Options.Current.OptimizeAny && Function is VariableNode)
+    { VariableNode vn = (VariableNode)Function;
+      if(Tail && FuncNameMatch(vn.Name, InFunc)) // see if we can tailcall ourselves with a branch
+      { int positional = InFunc.Parameters.Length-(InFunc.HasList ? 1 : 0)-(InFunc.HasDict ? 1 : 0);
+        if(Args.Length<positional)
+          throw new TargetParameterCountException(
+            string.Format("{0} expects {1}{2} args, but is being passed {3}",
+                          vn.Name, InFunc.HasList ? "at least " : "", positional, Args.Length));
+        // TODO: handle arguments that clear the stack
+        for(int i=0; i<positional; i++) Args[i].Expression.Emit(cg);
+        if(InFunc.HasList)
+          Options.Current.Language.EmitPackedArguments(cg, GetArgNodes(), positional, Args.Length-positional);
+        if(InFunc.HasDict) Options.Current.Language.EmitNewKeywordDict(cg);
+        for(int i=InFunc.Parameters.Length-1; i>=0; i--) cg.EmitSet(InFunc.Parameters[i].Name);
+        cg.ILG.Emit(InTry==null ? OpCodes.Br : OpCodes.Leave, InFunc.StartLabel);
+        etype = typeof(object);
+        return;
+      }
+      else if(Options.Current.Language.InlineFunction(cg, vn.Name.String, this, ref etype))
+      { TailReturn(cg);
+        return;
+      }
+    }
+
+    normal:
+    Slot ftmp = null;
+    bool keepAround = HasInterruptArg();
+
+    // FIXME: we need to preserve the left-to-right evaluation order
+    Node[] nodes = GetArgNodes(false);
+    if(NumLists==0 && NumDicts==0)
+    { if(NumNamed==0)
+      { Function.EmitTyped(cg, typeof(IProcedure));
+        if(!hasTryArg) cg.EmitObjectArray(nodes);
+        else
+        { ftmp = cg.AllocLocalTemp(typeof(IProcedure), keepAround);
+          ftmp.EmitSet(cg);
+          Slot atmp = cg.AllocObjectArray(nodes);
+          ftmp.EmitGet(cg);
+          atmp.EmitGet(cg);
+          cg.FreeLocalTemp(atmp);
+        }
+      }
+      else
+      { Function.EmitTyped(cg, typeof(IFancyProcedure));
+        if(!hasTryArg) EmitPosNamesValues(cg, nodes);
+        else
+        { ftmp = cg.AllocLocalTemp(typeof(IFancyProcedure), keepAround);
+          ftmp.EmitSet(cg);
+          EmitPosNamesValues(cg, nodes, ftmp);
+        }
+      }
+
+      if(Tail && InTry==null) cg.ILG.Emit(OpCodes.Tailcall);
+      if(NumNamed==0) cg.EmitCall(typeof(IProcedure), "Call");
+      else cg.EmitCall(typeof(IFancyProcedure), "Call", typeof(object[]), typeof(string[]), typeof(object[]));
+    }
+    else
+    { Function.Emit(cg);
+      if(!hasTryArg) EmitCallArgs(cg, nodes);
+      else
+      { ftmp = cg.AllocLocalTemp(typeof(object), keepAround);
+        ftmp.EmitSet(cg);
+        EmitCallArgs(cg, nodes, ftmp);
+      }
+      if(Tail && InTry==null) cg.ILG.Emit(OpCodes.Tailcall);
+      cg.EmitCall(typeof(Ops), "Call", typeof(object), typeof(CallArg[]));
+    }
+
+    TailReturn(cg);
+    if(ftmp!=null) cg.FreeLocalTemp(ftmp);
+
+    etype = typeof(object);
+  }
+  #endregion
+
+  #region Evaluate
+  public override object Evaluate()
+  { if(IsConstant)
+    { object result;
+      if(Options.Current.Language.EvaluateConstantFunction(((VariableNode)Function).Name.String,
+                                                           GetArgNodes(), out result))
+        return result;
+    }
+
+    IProcedure func = Ops.ExpectProcedure(Function.Evaluate());
+    if(Args.Length==0) func.Call(Ops.EmptyArray);
+    
+    Node[] nodes = GetArgNodes(false);
+    if(NumLists==0 && NumDicts==0)
+    { if(NumNamed==0) return func.Call(MakeObjectArray(nodes));
+      else
+      { object[] pos, values;
+        string[] names;
+        EvaluatePosNamesValues(out pos, out names, out values);
+        return Ops.ExpectFancyProcedure(func).Call(pos, names, values);
+      }
+    }
+    else return Ops.Call(func, EvaluateCallArgs(nodes));
+  }
+  #endregion
+
+  public override Type GetNodeType()
+  { if(Options.Current.OptimizeSpeed && !HasTryArg() && NumNamed==0 && NumLists==0 && NumDicts==0 &&
+       Function is VariableNode)
+    { string name = ((VariableNode)Function).Name.String;
+      Language lang = Options.Current.Language;
+      if(lang.IsConstantFunction(name)) return lang.GetInlinedResultType(name);
+    }
+    return typeof(object);
   }
 
-  bool HasPlainTryArg()
-  { for(int i=0; i<Args.Length; i++)
-      if(Args[i].Name==null && Args[i].Type==ArgType.Normal && Args[i].Expression.ClearsStack) return true;
-    return false;
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    Function.MarkTail(false);
+    foreach(Argument a in Args) a.Expression.MarkTail(false);
   }
 
-  bool HasTryArg()
-  { for(int i=0; i<Args.Length; i++) if(Args[i].Expression.ClearsStack) return true;
-    return false;
+  public override void Optimize()
+  { bool isconst = true;
+    foreach(Argument a in Args) if(!a.Expression.IsConstant) { isconst=false; break; }
+    IsConstant = isconst && Function is VariableNode &&
+                 Options.Current.Language.IsConstantFunction(((VariableNode)Function).Name.String);
   }
+
+  public override void SetFlags()
+  { bool clears=Function.ClearsStack, interrupts=Function.Interrupts;
+    foreach(Argument a in Args)
+    { if(a.Expression.ClearsStack) clears = true;
+      if(a.Expression.Interrupts) interrupts = true;
+    }
+    ClearsStack = clears;
+    Interrupts  = interrupts;
+  }
+
+  public override void Walk(IWalker w)
+  { if(w.Walk(this))
+    { Function.Walk(w);
+      foreach(Argument a in Args) a.Expression.Walk(w);
+    }
+    w.PostWalk(this);
+  }
+
+  public readonly Node Function;
+  public LambdaNode InFunc;
 
   static bool FuncNameMatch(Name var, LambdaNode func)
   { Name binding = func.Binding;
@@ -2002,7 +1988,6 @@ public abstract class ExceptionNode : Node
     }
 
     returnSlot = etype==typeof(void) ? null : cg.AllocLocalTemp(typeof(object), Body.Interrupts);
-    Debug.Assert(returnSlot!=null || !Tail);
     cg.MarkPosition(this);
 
     bool haveExcept = Excepts!=null && Excepts.Length!=0;
@@ -2051,11 +2036,8 @@ public abstract class ExceptionNode : Node
     }
 
     if(returnSlot==null)
-    { Body.Emit(cg, ref etype);
-      if(etype!=typeof(void))
-      { etype = typeof(void);
-        cg.ILG.Emit(OpCodes.Pop);
-      }
+    { if(etype==typeof(void)) Body.EmitVoid(cg);
+      else Body.Emit(cg, ref etype);
     }
     else
     { etype = typeof(object);
@@ -2089,8 +2071,9 @@ public abstract class ExceptionNode : Node
       MethodInfo expectType=typeof(Ops).GetMethod("ExpectType"), isInst=typeof(Type).GetMethod("IsInstanceOfType");
       FieldInfo rtType = typeof(ReflectedType).GetField("Type");
 
-      foreach(Except ex in Excepts)
-      { Label next;
+      for(int exi=0; exi<Excepts.Length; exi++)
+      { Except ex = Excepts[exi];
+        Label next;
         if(ex.Types==null)
         { needRethrow = false;
           next = new Label();
@@ -2128,7 +2111,11 @@ public abstract class ExceptionNode : Node
           returnSlot.EmitSet(cg);
         }
 
-        cg.ILG.Emit(OpCodes.Leave, Tail ? LeaveLabel : leaveLabel);
+        // only emit a Leave if there's code that follows (needRethrow), or we're not the last clause, or we need to
+        // jump somewhere other than the end of the current try block
+        if(needRethrow || exi!=Excepts.Length-1 || (Tail && InTry!=null))
+          cg.ILG.Emit(OpCodes.Leave, Tail ? LeaveLabel : leaveLabel);
+
         if(ex.Types==null) break;
         else cg.ILG.MarkLabel(next);
       }
@@ -2225,8 +2212,7 @@ public abstract class ExceptionNode : Node
     if(Excepts!=null)
       foreach(Except ex in Excepts)
         if(HasYield.Check(ex.Body)) 
-          throw Ops.SyntaxError(this, "yield clauses cannot appear within exception handlers, finally clauses, or "+
-                                      "else clauses");
+          throw Ops.SyntaxError(this, "yield clauses cannot appear within exception handlers or finally clauses");
   }
 
   public override void SetFlags()
@@ -2316,7 +2302,7 @@ public sealed class GeneratorNode : Node
 
   public override void MarkTail(bool tail)
   { Tail = tail;
-    Body.MarkTail(true);
+    Body.MarkTail(false);
   }
 
   public override void Walk(IWalker w) // this should be kept in sync with AST.NodeDecorator
@@ -2326,6 +2312,7 @@ public sealed class GeneratorNode : Node
 
   public Node Body;
   public YieldNode[] Yields;
+  public Label TrueLabel;
   
   ConstructorInfo MakeGenerator(CodeGenerator cg)
   { TypeGenerator tg = cg.TypeGenerator.DefineNestedType(TypeAttributes.Sealed, "generator$"+index.Next,
@@ -2334,8 +2321,11 @@ public sealed class GeneratorNode : Node
     ncg.IsGenerator = true;
     ncg.Namespace = new FieldNamespace(cg.Namespace, "_", ncg, new ThisSlot(tg.TypeBuilder));
 
+    bool hasTry = false;
     foreach(YieldNode yn in Yields)
+    { if(yn.Targets.Length!=1) hasTry = true;
       for(int i=0; i<yn.Targets.Length; i++) yn.Targets[i].Label = ncg.ILG.DefineLabel();
+    }
 
     Label[] jumps = new Label[Yields.Length];
     for(int i=0; i<Yields.Length; i++) jumps[i] = Yields[i].Targets[0].Label;
@@ -2343,7 +2333,15 @@ public sealed class GeneratorNode : Node
     ncg.EmitFieldGet(typeof(Generator).GetField("jump", BindingFlags.Instance|BindingFlags.NonPublic));
     ncg.ILG.Emit(OpCodes.Switch, jumps);
 
+    if(hasTry) TrueLabel = ncg.ILG.DefineLabel();
     Body.EmitVoid(ncg);
+    ncg.EmitBool(false);
+    ncg.EmitReturn();
+    if(hasTry)
+    { ncg.ILG.MarkLabel(TrueLabel);
+      ncg.EmitBool(true);
+      ncg.EmitReturn();
+    }
     ncg.Finish();
 
     ncg = tg.DefineChainedConstructor(typeof(LocalEnvironment));
@@ -2353,6 +2351,311 @@ public sealed class GeneratorNode : Node
   }
 
   static Index index = new Index();
+}
+#endregion
+
+#region GetAccessorNode
+public sealed class GetAccessorNode : Node
+{ public GetAccessorNode(Node obj, Node member) { Object=obj; Member=member; }
+
+  public override void Emit(CodeGenerator cg, ref Type etype)
+  { if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
+    else
+    { if(!Member.ClearsStack)
+      { Object.Emit(cg);
+        Member.EmitString(cg);
+      }
+      else
+      { Member.Emit(cg);
+        Slot str = cg.AllocLocalTemp(typeof(string));
+        str.EmitSet(cg);
+        Object.Emit(cg);
+        str.EmitGet(cg);
+        cg.FreeLocalTemp(str);
+      }
+      cg.EmitCall(typeof(Ops), "GetAccessor", typeof(object), typeof(string));
+      etype = typeof(object);
+    }
+    TailReturn(cg);
+  }
+
+  public override object Evaluate() { return Ops.GetAccessor(Object.Evaluate(), Ops.ExpectString(Member.Evaluate())); }
+
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    Object.MarkTail(false);
+    Member.MarkTail(false);
+  }
+
+  public override void Optimize() { IsConstant = AreConstant(Object, Member); }
+
+  public override void SetFlags()
+  { ClearsStack = HasExcept(Object, Member);
+    Interrupts  = HasInterrupt(Object, Member);
+  }
+
+  public override void Walk(IWalker w)
+  { if(w.Walk(this))
+    { Object.Walk(w);
+      Member.Walk(w);
+    }
+    w.PostWalk(this);
+  }
+
+  public readonly Node Object, Member;
+}
+#endregion
+
+#region GetSlotBase
+public abstract class GetSlotBase : Node
+{ public GetSlotBase(Node obj, Node member, bool isProperty) { Object=obj; Member=member; IsProperty=isProperty; }
+  
+  public override void Emit(CodeGenerator cg, ref Type etype)
+  { if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
+    else
+    { if(!Member.ClearsStack)
+      { Object.Emit(cg);
+        Member.EmitString(cg);
+      }
+      else
+      { Member.Emit(cg);
+        Slot str = cg.AllocLocalTemp(typeof(string));
+        str.EmitSet(cg);
+        Object.Emit(cg);
+        str.EmitGet(cg);
+        cg.FreeLocalTemp(str);
+      }
+      cg.EmitCall(typeof(Ops), IsProperty ? "GetProperty" : "GetSlot", typeof(object), typeof(string));
+      etype = typeof(object);
+    }
+    TailReturn(cg);
+  }
+
+  public void EmitSet(CodeGenerator cg, Type onStack)
+  { cg.EmitConvertTo(typeof(object), onStack);
+    if(!ClearsStack)
+    { Object.Emit(cg);
+      Member.EmitString(cg);
+    }
+    else if(!Member.ClearsStack)
+    { Slot value=cg.AllocLocalTemp(typeof(object)), obj;
+
+      value.EmitSet(cg);
+      Object.Emit(cg);
+      obj = cg.AllocLocalTemp(typeof(object));
+      obj.EmitSet(cg);
+
+      value.EmitGet(cg);
+      obj.EmitGet(cg);
+      cg.FreeLocalTemp(value); cg.FreeLocalTemp(obj); 
+      Member.EmitString(cg);
+    }
+    else
+    { Slot value=cg.AllocLocalTemp(typeof(object)), obj, member;
+      value.EmitSet(cg);
+      Object.Emit(cg);
+      obj = cg.AllocLocalTemp(typeof(object));
+      obj.EmitSet(cg);
+      Member.EmitString(cg);
+      member = cg.AllocLocalTemp(typeof(string));
+      member.EmitSet(cg);
+
+      value.EmitGet(cg);
+      obj.EmitGet(cg);
+      member.EmitGet(cg);
+      cg.FreeLocalTemp(value); cg.FreeLocalTemp(obj); cg.FreeLocalTemp(member);
+    }
+    
+    cg.EmitCall(typeof(Ops), IsProperty ? "SetProperty" : "SetSlot", typeof(object), typeof(object), typeof(string));
+  }
+
+  public override object Evaluate()
+  { object obj = Object.Evaluate();
+    string member = Ops.ExpectString(Member.Evaluate());
+    return IsProperty ? Ops.GetProperty(obj, member) : Ops.GetSlot(obj, member);
+  }
+
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    Object.MarkTail(false);
+    Member.MarkTail(false);
+  }
+
+  public override void Optimize() { IsConstant = AreConstant(Object, Member); }
+
+  public override void SetFlags()
+  { ClearsStack = HasExcept(Object, Member);
+    Interrupts  = HasInterrupt(Object, Member);
+  }
+
+  public override void Walk(IWalker w)
+  { if(w.Walk(this))
+    { Object.Walk(w);
+      Member.Walk(w);
+    }
+    w.PostWalk(this);
+  }
+
+  public readonly Node Object, Member;
+  public readonly bool IsProperty;
+}
+#endregion
+#region SetSlotBase
+public abstract class SetSlotBase : Node
+{ public SetSlotBase(Node obj, Node member, Node value, bool isProperty)
+  { Object=obj; Member=member; Value=value; IsProperty=isProperty;
+  }
+  
+  public override void Emit(CodeGenerator cg, ref Type etype)
+  { if(!ClearsStack || !Member.ClearsStack)
+    { cg.EmitNodes(Value, Object);
+      Member.EmitString(cg);
+    }
+    else if(!Member.ClearsStack)
+    { Member.EmitString(cg);
+      Slot str = cg.AllocLocalTemp(typeof(string));
+      str.EmitSet(cg);
+      cg.EmitNodes(Value, Object);
+      str.EmitGet(cg);
+      cg.FreeLocalTemp(str);
+    }
+    cg.EmitCall(typeof(Ops), IsProperty ? "SetProperty" : "SetSlot", typeof(object), typeof(object), typeof(string));
+
+    if(etype!=typeof(void))
+    { cg.EmitNull();
+      etype = typeof(object);
+    }
+    TailReturn(cg);
+  }
+
+  public override object Evaluate()
+  { object value=Value.Evaluate(), obj=Object.Evaluate();
+    string member = Ops.ExpectString(Member.Evaluate());
+    if(IsProperty) Ops.SetProperty(value, obj, member);
+    else Ops.SetSlot(value, obj, member);
+    return null;
+  }
+
+  public readonly Node Object, Member, Value;
+  public readonly bool IsProperty;
+}
+#endregion
+
+#region CallPropertyNode
+public sealed class CallPropertyNode : CallNodeBase
+{ public CallPropertyNode(Node obj, Node member) : this(obj, member, (Argument[])null) { }
+  public CallPropertyNode(Node obj, Node member, Node[] args) : this(obj, member, NodesToArgs(args)) { }
+  public CallPropertyNode(Node obj, Node member, Argument[] args)
+  { Object=obj; Member=member;
+    if(args==null) args = new Argument[] { new Argument(new LiteralNode(null)) };
+    else
+    { Argument[] nargs = new Argument[args.Length+1];
+      nargs[0] = new Argument(new LiteralNode(null));
+      args.CopyTo(nargs, 1);
+      args = nargs;
+    }
+    SetArgs(args);
+  }
+
+  public override void Emit(CodeGenerator cg, ref Type etype)
+  { bool hasTryArg=HasTryArg(), keepAround=HasInterruptArg();
+
+    Object.Emit(cg);
+    Slot obj = cg.AllocLocalTemp(typeof(object), keepAround || Member.Interrupts);
+    if(!hasTryArg && !Member.ClearsStack) cg.Dup();
+    obj.EmitSet(cg);
+
+    Member.EmitString(cg);
+    Slot member;
+    if(!hasTryArg && !Member.ClearsStack) member = null;
+    else
+    { member = cg.AllocLocalTemp(typeof(string), keepAround);
+      member.EmitSet(cg);
+    }
+
+    Args[0].Expression = new SlotNode(obj);
+
+    // FIXME: we need to preserve the left-to-right evaluation order
+    Node[] nodes = GetArgNodes(false);
+    if(NumLists==0 && NumDicts==0)
+    { if(NumNamed==0)
+      { if(member==null) cg.EmitObjectArray(nodes);
+        else
+        { Slot atmp = cg.AllocObjectArray(nodes);
+          obj.EmitGet(cg);
+          member.EmitGet(cg);
+          atmp.EmitGet(cg);
+          cg.FreeLocalTemp(atmp);
+        }
+      }
+      else
+      { if(member==null) EmitPosNamesValues(cg, nodes);
+        else EmitPosNamesValues(cg, nodes, obj, member);
+      }
+
+      if(Tail && InTry==null) cg.ILG.Emit(OpCodes.Tailcall);
+      if(NumNamed==0) cg.EmitCall(typeof(Ops), "CallProperty", typeof(object), typeof(string), typeof(object[]));
+      else cg.EmitCall(typeof(Ops), "CallProperty",
+                       typeof(object), typeof(string), typeof(object[]), typeof(string[]), typeof(object[]));
+    }
+    else
+    { if(member==null) EmitCallArgs(cg, nodes);
+      else EmitCallArgs(cg, nodes, obj, member);
+      if(Tail && InTry==null) cg.ILG.Emit(OpCodes.Tailcall);
+      cg.EmitCall(typeof(Ops), "CallProperty", typeof(object), typeof(string), typeof(CallArg[]));
+    }
+
+    TailReturn(cg);
+    if(member!=null) cg.FreeLocalTemp(member);
+    cg.FreeLocalTemp(obj);
+
+    etype = typeof(object);
+  }
+
+  public override object Evaluate()
+  { object obj = Object.Evaluate();
+    string member = Ops.ExpectString(Member.Evaluate());
+    Node[] nodes = GetArgNodes(false);
+    nodes[0] = new LiteralNode(obj);
+
+    if(NumLists==0 && NumDicts==0)
+    { if(NumNamed==0) return Ops.CallProperty(obj, member, MakeObjectArray(nodes));
+      else
+      { object[] pos, values;
+        string[] names;
+        EvaluatePosNamesValues(out pos, out names, out values);
+        return Ops.CallProperty(obj, member, pos, names, values);
+      }
+    }
+    else return Ops.CallProperty(obj, member, EvaluateCallArgs(nodes));
+  }
+
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+  }
+
+  public readonly Node Object, Member;
+}
+#endregion
+#region GetPropertyNode
+public sealed class GetPropertyNode : GetSlotBase
+{ public GetPropertyNode(Node obj, Node member) : base(obj, member, true) { }
+}
+#endregion
+#region SetPropertyNode
+public sealed class SetPropertyNode : SetSlotBase
+{ public SetPropertyNode(Node obj, Node member, Node value) : base(obj, member, value, true) { }
+}
+#endregion
+
+#region GetSlotNode
+public sealed class GetSlotNode : GetSlotBase
+{ public GetSlotNode(Node obj, Node member) : base(obj, member, false) { }
+}
+#endregion
+#region SetSlotNode
+public sealed class SetSlotNode : SetSlotBase
+{ public SetSlotNode(Node obj, Node member, Node value) : base(obj, member, value, false) { }
 }
 #endregion
 
@@ -2699,22 +3002,6 @@ public sealed class LambdaNode : Node
 }
 #endregion
 
-#region LastNode
-public sealed class LastNode : Node
-{ public override void Emit(Scripting.CodeGenerator cg, ref Type etype)
-  { if(etype!=typeof(void))
-    { cg.EmitFieldGet(typeof(Ops), "LastPtr");
-      etype = typeof(object);
-      TailReturn(cg);
-    }
-  }
-
-  public override object Evaluate() { return Ops.LastPtr; }
-  public override Type GetNodeType() { return typeof(object); }
-  public override void Walk(IWalker w) { w.Walk(this); w.PostWalk(this); }
-}
-#endregion
-
 #region LiteralNode
 public sealed class LiteralNode : Node
 { public LiteralNode(object value) { Value=value; }
@@ -2842,142 +3129,6 @@ public sealed class MarkSourceNode : DebugNode
 }
 #endregion
 
-// dotted names are only supported if 'members' is a constant value (members.IsConstant is true). otherwise, 'members'
-// must evaluate to a non-dotted string
-#region MemberNode
-public class MemberNode : Node
-{ public MemberNode(Node value, Node members) : this(value, members, true) { }
-  public MemberNode(Node value, Node members, bool enableCache)
-  { Value=value; Members=members; EnableCache=enableCache;
-  }
-
-  public sealed class CachePromise
-  { public Slot GetCache(CodeGenerator cg)
-    { if(cache==null)
-        cache = cg.TypeGenerator.DefineStaticField("tc$"+cindex.Next, typeof(MemberCache));
-      return cache;
-    }
-
-    Slot cache;
-
-    static Index cindex = new Index();
-  }
-
-  public override void Emit(CodeGenerator cg, ref Type etype)
-  { Value.Emit(cg);
-    if(Members.IsConstant)
-    { string[] bits;
-      { string str = Members.Evaluate() as string;
-        if(str==null) throw Ops.SyntaxError(this, "MemberNode expects a string value as the second argument");
-        bits = str.Split('.');
-      }
-
-      Label done;
-      Slot cache;
-      if(!EnableCache || !Options.Current.OptimizeSpeed) { cache=null; done=new Label(); }
-      else
-      { Label miss=cg.ILG.DefineLabel(), isNull=cg.ILG.DefineLabel();
-        cache = (Cache==null || Options.Current.IsPreCompilation ? new CachePromise() : Cache).GetCache(cg);
-        done  = cg.ILG.DefineLabel();
-
-        cg.Dup();
-        cg.ILG.Emit(OpCodes.Brfalse_S, isNull);
-        cg.Dup();
-        Slot tmp = cg.AllocLocalTemp(typeof(object));
-        tmp.EmitSet(cg);
-        cg.EmitCall(typeof(MemberCache), "TypeFromObject"); // TODO: maybe we should inline this
-        cache.EmitGetAddr(cg);
-        cg.EmitFieldGet(typeof(MemberCache), "Type");
-        cg.ILG.Emit(OpCodes.Bne_Un_S, miss);
-        HandleThisPtr(cg, tmp);
-        cache.EmitGetAddr(cg);
-        cg.EmitFieldGet(typeof(MemberCache), "Value");
-        cg.ILG.Emit(OpCodes.Br, done);
-        cg.ILG.MarkLabel(miss);
-        cache.EmitGetAddr(cg);
-        tmp.EmitGet(cg);
-        cg.EmitCall(typeof(MemberCache), "TypeFromObject"); // TODO: maybe we should inline this
-        cg.EmitFieldSet(typeof(MemberCache), "Type");
-        tmp.EmitGet(cg);
-        cg.ILG.MarkLabel(isNull);
-
-        cg.FreeLocalTemp(tmp);
-      }
-
-      for(int i=0; i<bits.Length; i++)
-      { if(i==bits.Length-1) HandleThisPtr(cg);
-        cg.EmitCall(typeof(MemberContainer), "FromObject");
-        cg.EmitString(bits[i]);
-        cg.EmitCall(typeof(MemberContainer), "GetSlot", typeof(string));
-      }
-
-      if(cache!=null)
-      { Slot tmp = cg.AllocLocalTemp(typeof(object));
-        tmp.EmitSet(cg);
-        cache.EmitGetAddr(cg);
-        tmp.EmitGet(cg);
-        cg.EmitFieldSet(typeof(MemberCache), "Value");
-        tmp.EmitGet(cg);
-        cg.ILG.MarkLabel(done);
-        cg.FreeLocalTemp(tmp);
-      }
-    }
-    else
-    { Slot tmp1, tmp2;
-      HandleThisPtr(cg);
-      if(Members is TryNode)
-      { tmp1 = cg.AllocLocalTemp(typeof(object), Members.Interrupts);
-        tmp1.EmitSet(cg);
-      }
-      else { tmp1 = tmp2 = null; }
-      Members.EmitTyped(cg, typeof(string));
-      if(tmp1!=null)
-      { tmp2 = cg.AllocLocalTemp(typeof(string));
-        tmp2.EmitSet(cg);
-        tmp1.EmitGet(cg);
-        tmp2.EmitGet(cg);
-
-        if(!Members.Interrupts) cg.FreeLocalTemp(tmp1);
-        cg.FreeLocalTemp(tmp2);
-      }
-      cg.EmitCall(typeof(Ops), "GetSlot", typeof(object), typeof(string));
-    }
-    etype = typeof(object);
-    TailReturn(cg);
-  }
-
-  public override object Evaluate()
-  { object value = Value.Evaluate();
-    string str = Ops.ExpectString(Members.Evaluate());
-    if(!Members.IsConstant) value = Ops.GetSlot(value, str);
-    else foreach(string bit in str.Split('.')) value = Ops.GetSlot(value, bit);
-    return value;
-  }
-
-  public override Type GetNodeType() { return typeof(object); }
-
-  public override void SetFlags()
-  { ClearsStack = Value.ClearsStack || Members.ClearsStack;
-    Interrupts  = Value.Interrupts  || Members.Interrupts;
-  }
-
-  public override void Walk(IWalker w)
-  { if(w.Walk(this))
-    { Value.Walk(w);
-      Members.Walk(w);
-    }
-    w.PostWalk(this);
-  }
-
-  public readonly Node Value, Members;
-  public CachePromise Cache;
-  public readonly bool EnableCache;
-  
-  protected virtual void HandleThisPtr(CodeGenerator cg) { } // the 'this' pointer is on the stack but must be preserved
-  protected virtual void HandleThisPtr(CodeGenerator cg, Slot slot) { } // the 'this' pointer is in the slot
-}
-#endregion
-
 #region OpNode
 public sealed class OpNode : Node
 { public OpNode(Operator op, params Node[] nodes) { Operator=op; Nodes=nodes; }
@@ -3010,47 +3161,6 @@ public sealed class OpNode : Node
 
   public readonly Operator Operator;
   public readonly Node[] Nodes;
-}
-#endregion
-
-#region PropMemberNode
-public sealed class PropMemberNode : MemberNode
-{ public PropMemberNode(Node value, Node member) : base(value, member) { }
-  public PropMemberNode(Node value, Node member, bool enableCache) : base(value, member, enableCache) { }
-
-  protected override void HandleThisPtr(Scripting.CodeGenerator cg)
-  { cg.Dup();
-    cg.EmitFieldSet(typeof(Ops), "LastPtr");
-  }
-
-  protected override void HandleThisPtr(Scripting.CodeGenerator cg, Slot slot)
-  { slot.EmitGet(cg);
-    cg.EmitFieldSet(typeof(Ops), "LastPtr");
-  }
-}
-#endregion
-
-#region PropertyNode
-public sealed class PropertyNode : WrapperNode
-{ public PropertyNode(Node value, Node member) : this(value, member, (Argument[])null, true) { }
-  public PropertyNode(Node value, Node member, Node[] extraArgs)
-    : this(value, member, CallNode.NodesToArgs(extraArgs), true) { }
-  public PropertyNode(Node value, Node member, Argument[] extraArgs) : this(value, member, extraArgs, true) { }
-  public PropertyNode(Node value, Node member, bool enableCache)
-    : this(value, member, (Argument[])null, enableCache) { }
-  public PropertyNode(Node value, Node member, Node[] extraArgs, bool enableCache)
-    : this(value, member, CallNode.NodesToArgs(extraArgs), enableCache) { }
-  public PropertyNode(Node value, Node member, Argument[] extraArgs, bool enableCache)
-  { Argument[] args;
-    if(extraArgs==null) args = new Argument[] { new Argument(new LastNode()) };
-    else
-    { args = new Argument[extraArgs.Length+1];
-      args[0] = new Argument(new LastNode());
-      extraArgs.CopyTo(args, 1);
-    }
-
-    Node = new CallNode(new PropMemberNode(value, member, enableCache), args);
-  }
 }
 #endregion
 
@@ -3137,14 +3247,14 @@ public class SetNode : SetNodeBase
   { if(lhs is VariableNode)
     { VariableNode vn = (VariableNode)lhs;
       InterpreterEnvironment cur = InterpreterEnvironment.Current;
-      if(vn.Name.Depth==Name.Global || cur==null)
+      if(cur!=null && vn.Name.Depth!=Name.Global) cur.Set(vn.Name.String, value);
+      else
       { switch(Type)
         { case SetType.Alter: TopLevel.Current.Alter(vn.Name.String, value); break;
           case SetType.Bind: TopLevel.Current.Bind(vn.Name.String, value); break;
           case SetType.Set: TopLevel.Current.Set(vn.Name.String, value); break;
         }
       }
-      else cur.Set(vn.Name.String, value);
     }
     else throw UnhandledNodeType(lhs);
   }
@@ -3334,9 +3444,8 @@ public sealed class TryNode : ExceptionNode
   
   public override void Postprocess()
   { base.Postprocess();
-    if(Else!=null && HasYield.Check(Else) || Finally!=null && HasYield.Check(Finally))
-      throw Ops.SyntaxError(this, "yield clauses cannot appear within exception handlers, finally clauses, or "+
-                                  "else clauses");
+    if(Finally!=null && HasYield.Check(Finally))
+      throw Ops.SyntaxError(this, "yield clauses cannot appear within exception handlers or finally clauses");
   }
 
   public override void WalkElse(IWalker w)
@@ -3716,8 +3825,11 @@ public sealed class YieldNode : Node
     }
     cg.EmitFieldSet(typeof(Generator).GetField("current", BindingFlags.Instance|BindingFlags.NonPublic));
 
-    cg.EmitBool(true);
-    cg.EmitReturn();
+    if(InTry!=null) cg.ILG.Emit(OpCodes.Leave, Generator.TrueLabel);
+    else
+    { cg.EmitBool(true);
+      cg.EmitReturn();
+    }
     cg.ILG.MarkLabel(Targets[Targets.Length-1].Label);
     TailReturn(cg);
     etype = typeof(void);
@@ -3741,8 +3853,9 @@ public sealed class YieldNode : Node
     w.PostWalk(this);
   }
 
+  public readonly Node Value;
   public Target[] Targets;
-  public Node Value;
+  public GeneratorNode Generator;
   public uint YieldNumber;
 }
 #endregion

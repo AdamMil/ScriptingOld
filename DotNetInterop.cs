@@ -33,7 +33,7 @@ namespace Scripting
 {
 
 #region FieldWrapper
-public abstract class FieldWrapper : IProcedure
+public abstract class FieldWrapper : IProcedure/*, IProperty*/
 { public FieldWrapper(string name) { Name=name; }
 
   public int MinArgs { get { return 1; } }
@@ -42,6 +42,11 @@ public abstract class FieldWrapper : IProcedure
 
   public abstract object Call(object[] args);
   public override string ToString() { return "#<field '"+Name+"'>"; }
+
+  /*#region IProperty
+  public abstract object Get(object[] args);
+  public abstract object Set(object[] args, object value);
+  #endregion*/
 
   public string Name;
 }
@@ -169,17 +174,7 @@ public sealed class ReflectedNamespace : MemberContainer
     dict[attrs.Length==0 ? type.Name : ((ScriptNameAttribute)attrs[0]).Name] = ReflectedType.FromType(type);
   }
 
-  public override void DeleteSlot(string name)
-  { throw new InvalidOperationException(".NET namespaces do not support the deletion of members");
-  }
-
-  public override object GetSlot(string name)
-  { object ret = dict[name];
-    if(ret==null) throw new ArgumentException(this.name+" does not contain a member named '"+name+"'");
-    return ret;
-  }
-
-  public override bool GetSlot(string name, out object ret)
+  public override bool GetSlot(object instance, string name, out object ret)
   { ret = dict[name];
     return ret!=null;
   }
@@ -190,9 +185,8 @@ public sealed class ReflectedNamespace : MemberContainer
   { Importer.Import(top, dict, null, names, asNames, "namespace '"+name+"'");
   }
 
-  public override void SetSlot(string name, object value)
-  { throw new InvalidOperationException(".NET namespaces do not support the alteration of members");
-  }
+  public override bool TryDeleteSlot(object instance, string name) { return false; }
+  public override bool TrySetSlot(object instance, string name, object value) { return false; }
 
   public override string ToString() { return "#<namespace '"+name+"'>"; }
 
@@ -285,19 +279,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
     return Constructor.Call(args);
   }
 
-  public override void DeleteSlot(string name)
-  { throw new InvalidOperationException(".NET types do not support the deletion of members");
-  }
-
-  public override object GetSlot(string name)
-  { if(dict==null) Initialize();
-    object ret = dict[name];
-    if(ret==null && !dict.Contains(name))
-      throw new ArgumentException(Ops.TypeName(Type)+" does not contain a member named '"+name+"'");
-    return ret;
-  }
-
-  public override bool GetSlot(string name, out object ret)
+  public override bool GetSlot(object instance, string name, out object ret)
   { if(dict==null) Initialize();
     ret = dict[name];
     return ret!=null || dict.Contains(name);
@@ -323,15 +305,8 @@ public sealed class ReflectedType : MemberContainer, IProcedure
     return ot==null ? Type==null : Type==null ? false : Type.IsAssignableFrom(ot);
   }
 
-  public override void SetSlot(string name, object value)
-  { throw new InvalidOperationException(".NET types do not support the alteration of members");
-  }
-
-  public override void SetValue(string name, object[] args, object value)
-  { IProperty prop = GetSlot("set/"+name) as IProperty;
-    if(prop!=null) prop.Set(args, value);
-    else SetSlot(name, value);
-  }
+  public override bool TryDeleteSlot(object instance, string name) { return false; }
+  public override bool TrySetSlot(object instance, string name, object value) { return false; }
 
   public override string ToString() { return "#<type '"+Ops.TypeName(Type)+"'>"; }
 

@@ -21,30 +21,22 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 using System;
 
-// TODO: stop using all these exceptions inherited from Python
-
 namespace Scripting
 {
 
-public sealed class AssertionFailedException : RuntimeException
+public class AssertionFailedException : ScriptException
 { public AssertionFailedException(string message) : base(message) { }
 }
 
-public class NameException : RuntimeException
-{ public NameException(string message) : base(message) { }
+public class AttributeException : ScriptException
+{ public AttributeException(string message) : base(message) { }
+  public AttributeException(object obj, string attr, string message) : base(message) { Object=obj; Attribute=attr; }
+  public readonly object Object;
+  public readonly string Attribute;
 }
 
 public class CompileTimeException : ScriptException
 { public CompileTimeException(string message) : base(message) { }
-}
-
-public class ModuleLoadException : RuntimeException
-{ public ModuleLoadException(string message) : base(message) { }
-}
-
-public class RuntimeException : ScriptException
-{ public RuntimeException() { }
-  public RuntimeException(string message) : base(message) { }
 }
 
 public class ScriptException : ApplicationException
@@ -56,12 +48,12 @@ public class SyntaxErrorException : CompileTimeException
 { public SyntaxErrorException(string message) : base(message) { }
 }
 
-public class TypeErrorException : RuntimeException
-{ public TypeErrorException(string message) : base(message) { }
-}
+public class UndefinedVariableException : ScriptException
+{ public UndefinedVariableException(string message) : base(message) { }
 
-public class ValueErrorException : RuntimeException
-{ public ValueErrorException(string message) : base(message) { }
+  public static UndefinedVariableException FromName(string varName)
+  { return new UndefinedVariableException("use of unbound variable: "+varName);
+  }
 }
 
 } // namespace Scripting

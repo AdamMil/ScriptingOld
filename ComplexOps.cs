@@ -143,7 +143,7 @@ public sealed class ComplexOps
   }
 
   public static object PowerMod(Complex a, object b, object c)
-  { throw Ops.TypeError("complex modulus not supported");
+  { throw new NotSupportedException("complex modulus not supported");
   }
 
   public static object Subtract(Complex a, object b)
