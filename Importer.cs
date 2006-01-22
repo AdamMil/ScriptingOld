@@ -49,19 +49,19 @@ public sealed class Importer
   { MemberContainer module, top;
     bool returnNow = false;
 
+    // FIXME: this caching with the bits[0] and the top, etc, is pretty crappy. fix it.
     lock(LoadedModules) module = (MemberContainer)LoadedModules[name];
     if(module!=null) return module;
 
-    // FIXME: optimize this so loading a dotted name from a file doesn't compile the file multiple times
     string[] bits = name.Split('.');
-    top = LoadFromPath(bits[0]);
+    top = LoadFromPath(name);
     if(top==null) top = LoadBuiltin(bits[0]);
     if(top==null)
-    { top = LoadFromDotNet(bits, returnTop);
-      if(top!=null) returnNow = true;
+    { top = LoadFromDotNet(bits, true);
+      if(top!=null && returnTop) returnNow = true;
     }
 
-    if(top!=null) lock(LoadedModules) LoadedModules[bits[0]] = top;
+    if(top!=null && bits.Length!=1) lock(LoadedModules) LoadedModules[bits[0]] = top;
     if(returnNow) return top;
 
     module = top;
@@ -70,6 +70,9 @@ public sealed class Importer
       if(!module.GetProperty(module, bits[i], out obj)) goto error;
       module = obj as MemberContainer;
     }
+
+    if(module!=null) lock(LoadedModules) LoadedModules[name] = module;
+
     if(returnTop) module = top;
     if(module!=null || !throwOnError) return module;
 
@@ -110,7 +113,7 @@ public sealed class Importer
 
   static MemberContainer LoadFromPath(string name) { return null; } // TODO: implement this
 
-  static readonly Hashtable builtinTypes=new Hashtable();
+  static readonly Hashtable builtinTypes = new Hashtable();
   static SortedList builtinNames;
 }
 

@@ -1,3 +1,4 @@
+
 /*
 Scripting is a low level framework for building dynamic languages.
 It produces languages which can be interpreted or compiled, targetting
@@ -630,7 +631,7 @@ public sealed class MultipleValues
     for(int i=0; i<Values.Length; i++)
     { if(sep) sb.Append(", ");
       else sep=true;
-      sb.Append(Ops.Repr(Values[i]));
+      sb.Append(Ops.ToCode(Values[i]));
     }
     return sb.Append('}').ToString();
   }
@@ -1230,6 +1231,8 @@ public sealed class Ops
                        : mc.CallProperty(obj, name, out ret, positional, names, values);
   }
 
+  public static void DeleteSlot(object obj, string name) { MemberContainer.FromObject(obj).DeleteSlot(obj, name); }
+
   public static object GetProperty(object obj, string name)
   { return MemberContainer.FromObject(obj).GetProperty(obj, name);
   }
@@ -1487,7 +1490,7 @@ public sealed class Ops
     return Modulus(Power(a, b), c);
   }
 
-  public static string Repr(object obj) { return Options.Current.Language.Repr(obj); }
+  public static string ToCode(object obj) { return GetCurrentLanguage().ToCode (obj); }
 
   public static object RightShift(object a, object b)
   { switch(Convert.GetTypeCode(a))
@@ -1834,11 +1837,11 @@ public sealed class Template
   { int nargs = args.Length;
     if(!HasList)
     { if(nargs==NumParams) return args;
-      else if(nargs>NumParams) throw new TargetParameterCountException(Name+": expected at most "+NumParams+
-                                                                       " positional arguments, but received "+nargs);
+      else if(nargs>NumParams) throw new ArgumentException(Name+": expected at most "+NumParams+
+                                                           " positional arguments, but received "+nargs);
     }
-    if(nargs<NumRequired) throw new TargetParameterCountException(Name+": expected at least "+NumRequired+
-                                                                  " positional arguments, but received "+nargs);
+    if(nargs<NumRequired) throw new ArgumentException(Name+": expected at least "+NumRequired+
+                                                      " positional arguments, but received "+nargs);
 
     object[] newargs = nargs==NumParams ? args : new object[NumParams];
 

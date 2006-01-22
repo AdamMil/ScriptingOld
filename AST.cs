@@ -484,17 +484,17 @@ public abstract class Language
     return ret;
   }
 
-  public abstract string Repr(object obj);
-  public abstract string Repr(Node node);
-
   public virtual bool ShouldAddBuiltins(Type type) { return true; }
 
   public virtual string Str(object obj)
   { TypeCode tc = Convert.GetTypeCode(obj);
-    if(tc==TypeCode.Object) return Repr(obj);
+    if(tc==TypeCode.Object) return ToCode(obj);
     else if(tc==TypeCode.Empty) return "[NULL]";
     else return obj.ToString();
   }
+
+  public abstract string ToCode(object obj);
+  public abstract string ToCode(Node node);
 
   public virtual string TypeName(Type type) { return type.FullName; }
 
@@ -518,8 +518,8 @@ public sealed class NullLanguage : Language
   }
 
   public override string Str(object obj) { return obj==null ? "[NULL]" : obj.ToString(); }
-  public override string Repr(object obj) { return Str(obj); }
-  public override string Repr(Node node) { throw new NotSupportedException("Null language has no syntax"); }
+  public override string ToCode(object obj) { return Str(obj); }
+  public override string ToCode(Node node) { throw new NotSupportedException("Null language has no syntax"); }
 
   public static readonly NullLanguage Instance = new NullLanguage();
 }
@@ -1208,7 +1208,7 @@ public sealed class AssertNode : WrapperNode
 { public AssertNode(Node expression) : this(expression, null) { }
   public AssertNode(Node expression, Node message)
   { string nodeText = "assertion failed: ";
-    if(message==null) nodeText += Options.Current.Language.Repr(expression);
+    if(message==null) nodeText += Options.Current.Language.ToCode(expression);
 
     Node text = new LiteralNode(nodeText);
     Node[] objs = message==null ? new Node[] { text } : new Node[] { text, message };
@@ -1755,9 +1755,8 @@ public sealed class CallNode : CallNodeBase
       if(Tail && FuncNameMatch(vn.Name, InFunc)) // see if we can tailcall ourselves with a branch
       { int positional = InFunc.Parameters.Length-(InFunc.HasList ? 1 : 0)-(InFunc.HasDict ? 1 : 0);
         if(Args.Length<positional)
-          throw new TargetParameterCountException(
-            string.Format("{0} expects {1}{2} args, but is being passed {3}",
-                          vn.Name, InFunc.HasList ? "at least " : "", positional, Args.Length));
+          throw Ops.ArgError("{0} expects {1}{2} args, but is being passed {3}",
+                             vn.Name, InFunc.HasList ? "at least " : "", positional, Args.Length);
         // TODO: handle arguments that clear the stack
         for(int i=0; i<positional; i++) Args[i].Expression.Emit(cg);
         if(InFunc.HasList)
@@ -1959,23 +1958,25 @@ public class DeleteNode : SetNodeBase
       if(vn.Name.Depth==Name.Global || cur==null) TopLevel.Current.Unbind(vn.Name.String);
       else cur.Set(vn.Name.String, Binding.Unbound);
     }
+    else if(node is GetSlotNode) ((GetSlotNode)node).Delete();
     else throw UnhandledNodeType(node);
   }
 
   protected virtual void EmitDelete(CodeGenerator cg, Node node)
   { if(node is VariableNode) cg.EmitDelete(((VariableNode)node).Name);
+    else if(node is GetSlotNode) ((GetSlotNode)node).EmitDelete(cg);
     else throw UnhandledNodeType(node);
   }
 
   // TODO: currently, this has to be kept in sync with SetNodeBase.GetMutatedNames(), and the same for UpdateNames(). fix that.
   protected virtual void GetMutatedNames(IList names, Node lhs)
   { if(lhs is VariableNode) names.Add(new MutatedName(((VariableNode)lhs).Name));
-    else throw UnhandledNodeType(lhs);
+    else if(!(lhs is GetSlotNode)) throw UnhandledNodeType(lhs);
   }
 
   protected virtual void UpdateNames(MutatedName[] names, ref int i, Node lhs)
   { if(lhs is VariableNode) ((VariableNode)lhs).Name = names[i++].Name;
-    else throw UnhandledNodeType(lhs);
+    else if(!(lhs is GetSlotNode)) throw UnhandledNodeType(lhs);
   }
 
   protected static Exception UnhandledNodeType(Node node)
@@ -2430,6 +2431,12 @@ public sealed class GetAccessorNode : Node
 public abstract class GetSlotBase : Node
 { public GetSlotBase(Node obj, Node member, bool isProperty) { Object=obj; Member=member; IsProperty=isProperty; }
   
+  public void Assign(object value)
+  { string name = Ops.ExpectString(Member.Evaluate());
+    if(IsProperty) Ops.SetProperty(value, Object.Evaluate(), name);
+    else Ops.SetSlot(value, Object.Evaluate(), name);
+  }
+
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
     else
@@ -2720,6 +2727,24 @@ public sealed class SetPropertyNode : SetSlotBase
 #region GetSlotNode
 public sealed class GetSlotNode : GetSlotBase
 { public GetSlotNode(Node obj, Node member) : base(obj, member, false) { }
+
+  public void Delete() { Ops.DeleteSlot(Object.Evaluate(), Ops.ExpectString(Member.Evaluate())); }
+
+  public void EmitDelete(CodeGenerator cg)
+  { if(!Member.ClearsStack)
+    { Object.Emit(cg);
+      Member.EmitString(cg);
+    }
+    else
+    { Member.EmitString(cg);
+      Slot tmp = cg.AllocLocalTemp(typeof(string), Object.Interrupts);
+      tmp.EmitSet(cg);
+      Object.Emit(cg);
+      tmp.EmitGet(cg);
+      cg.FreeLocalTemp(tmp);
+    }
+    cg.EmitCall(typeof(Ops), "DeleteSlot");
+  }
 }
 #endregion
 #region SetSlotNode
@@ -3325,6 +3350,7 @@ public class SetNode : SetNodeBase
         }
       }
     }
+    else if(lhs is GetSlotBase) ((GetSlotBase)lhs).Assign(value);
     else throw UnhandledNodeType(lhs);
   }
 
@@ -3345,17 +3371,18 @@ public class SetNode : SetNodeBase
         cg.FreeLocalTemp(tmp);
       }
     }
+    else if(lhs is GetSlotBase) ((GetSlotBase)lhs).EmitSet(cg, onStack);
     else throw UnhandledNodeType(lhs);
   }
 
   protected virtual void GetMutatedNames(IList names, Node lhs)
   { if(lhs is VariableNode) names.Add(new MutatedName(((VariableNode)lhs).Name, RHS));
-    else throw UnhandledNodeType(lhs);
+    else if(!(lhs is GetSlotBase)) throw UnhandledNodeType(lhs);
   }
 
   protected virtual void UpdateNames(MutatedName[] names, ref int i, Node lhs)
   { if(lhs is VariableNode) ((VariableNode)lhs).Name = names[i++].Name;
-    else throw UnhandledNodeType(lhs);
+    else if(!(lhs is GetSlotBase)) throw UnhandledNodeType(lhs);
   }
 
   protected Exception UnhandledNodeType(Node node)
