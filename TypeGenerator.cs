@@ -25,7 +25,7 @@ using System.Collections.Specialized;
 using System.Reflection;
 using System.Reflection.Emit;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 public sealed class TypeGenerator
@@ -405,4 +405,4 @@ public sealed class TypeGenerator
   int numConstants;
 }
 
-} // namespace Scripting
+} // namespace Scripting.Backend

@@ -24,7 +24,7 @@ using System.Collections;
 using System.Reflection;
 using System.Reflection.Emit;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 public class CodeGenerator
@@ -648,4 +648,4 @@ public class CodeGenerator
   CachedArray localTemps, nsTemps;
 }
 
-} // namespace Scripting
+} // namespace Scripting.Backend

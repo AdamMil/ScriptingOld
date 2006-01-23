@@ -22,7 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 using System;
 using System.Globalization;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 public sealed class FloatOps
@@ -261,4 +261,4 @@ public sealed class FloatOps
   }
 }
 
-} // namespace Scripting
+} // namespace Scripting.Backend

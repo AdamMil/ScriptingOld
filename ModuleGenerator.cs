@@ -25,7 +25,7 @@ using System.IO;
 using System.Reflection;
 using System.Reflection.Emit;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 public abstract class BuiltinModule : CodeModule
@@ -36,9 +36,6 @@ public abstract class BuiltinModule : CodeModule
 
 public sealed class ModuleGenerator
 { ModuleGenerator() { }
-
-  // TODO: this is only a temporary solution. replace it with a better one
-  public static string CachePath = "dllcache/";
 
   /*
   #region Generate from a ModuleNode
@@ -93,17 +90,9 @@ public sealed class ModuleGenerator
     Array.Sort(attrs, CodeAttrComparer.Instance);
 
     // TODO: come up with a better naming scheme (replacing '+' with '.' can create collisions)
-    string filename = CachePath+type.FullName.Replace('+', '.')+".dll";
-    #if !DEBUG
-    if(File.Exists(filename))
-      try
-      { Assembly ass = Assembly.LoadFrom(filename);
-        Type mtype = ass.GetType(type.Name);
-        if(mtype!=null && mtype.IsSubclassOf(typeof(BuiltinModule)))
-          return (BuiltinModule)mtype.GetConstructor(Type.EmptyTypes).Invoke(null);
-      }
-      catch { }
-    #endif
+    string filename = Path.Combine(Scripting.DllCache, type.FullName.Replace('+', '.')+".dll");
+    MemberContainer mc = LoadFromCache(Scripting.DllCache);
+    if(mc!=null) return mc;
 
     AssemblyGenerator ag = new AssemblyGenerator(type.FullName, filename);
     TopLevel oldTL = TopLevel.Current;
@@ -119,11 +108,11 @@ public sealed class ModuleGenerator
       if(addBuiltins) Options.Current.Language.Builtins.Import(TopLevel.Current); // TODO: affected by above FIXME
       ReflectedType.FromType(type, false).Import(TopLevel.Current);
 
-      TypeGenerator tg = ag.DefineType(type.Name, typeof(BuiltinModule));
+      TypeGenerator tg = ag.DefineType(CacheTypeName(), typeof(BuiltinModule));
       CodeGenerator cg;
 
       cg = tg.GetInitializer();
-      Slot staticTop = tg.DefineStaticField("s$topLevel", typeof(TopLevel));
+      Slot staticTop = tg.DefineStaticField(FieldAttributes.Private, "topLevel", typeof(TopLevel));
       Slot oldInitTop = cg.AllocLocalTemp(typeof(TopLevel));
 
       cg.EmitFieldGet(typeof(TopLevel), "Current");
@@ -212,46 +201,120 @@ public sealed class ModuleGenerator
   }
   #endregion
 
-  #region Generate compiled file
-  public static void Generate(string name, string filename, LambdaNode body, PEFileKinds fileKind)
-  { System.Diagnostics.Debug.Assert(TopLevel.Current==null); // TODO: currently this can only be called once. improve that...
+  #region Generate from file
+  public static MemberContainer Generate(string filename)
+  { if(!File.Exists(filename)) return null;
+    filename = Path.GetFullPath(filename);
 
-    AssemblyGenerator ag = new AssemblyGenerator(name, filename);
-    SnippetMaker.Assembly = ag;
+    string dllPath = Path.Combine(Path.GetDirectoryName(filename), Path.GetFileNameWithoutExtension(filename)+".dll");
+    DateTime modTime = File.GetLastWriteTimeUtc(filename);
+    MemberContainer mc = LoadFromCache(dllPath, modTime);
+    if(mc!=null) return mc;
 
-    TopLevel.Current = new TopLevel();
-    Options.Current.Language.Builtins.Import(TopLevel.Current);
+    Language oldLang = Options.Current.Language;
+    try
+    { Options.Current.Language = Scripting.LoadLanguage(Path.GetExtension(filename));
+      Type type = Generate(CacheTypeName(modTime), Path.GetFileNameWithoutExtension(filename), dllPath,
+                           AST.CreateCompiled(Options.Current.Language.ParseFile(filename)), PEFileKinds.Dll);
+      return (MemberContainer)type.GetConstructor(Type.EmptyTypes).Invoke(null);
+    }
+    finally { Options.Current.Language = oldLang; }
+  }
+  #endregion
 
-    TypeGenerator tg = ag.DefineType(TypeAttributes.Public|TypeAttributes.Sealed, name);
+  #region Generate .DLL from node
+  public static Type Generate(string typeName, string moduleName, string filename, LambdaNode body, PEFileKinds fileKind)
+  { TopLevel oldTop = TopLevel.Current;
+    try
+    { TopLevel.Current = new TopLevel();
+      MemberContainer builtins = Options.Current.Language.Builtins;
+      if(builtins!=null) builtins.Import(TopLevel.Current);
 
-    CodeGenerator cg = tg.GetInitializer();
-    cg.EmitLanguage(Options.Current.Language);
-    cg.EmitPropGet(typeof(Language), "Builtins");
-    cg.EmitNew(typeof(TopLevel));
-    cg.Dup();
-    cg.EmitFieldSet(typeof(TopLevel), "Current");
-    cg.EmitCall(typeof(Module), "ImportAll");
+      AssemblyGenerator ag = new AssemblyGenerator(moduleName, filename);
+      TypeGenerator tg = ag.DefineType(TypeAttributes.Public|TypeAttributes.Sealed, typeName, typeof(CodeModule));
+      Slot topSlot = tg.DefineStaticField(FieldAttributes.Private, "topLevel", typeof(TopLevel));
 
-    cg = tg.DefineStaticMethod(MethodAttributes.Private, "Run", typeof(object),
-                               new Type[] { typeof(LocalEnvironment) });
-    cg.SetupNamespace(body.ClosedVars);
-    body.Body.Emit(cg);
-    cg.Finish();
-    MethodInfo run = (MethodInfo)cg.MethodBase;
+      CodeGenerator cg = tg.GetInitializer();
+      cg.EmitFieldGet(typeof(TopLevel), "Current");
+      Slot oldTopSlot = cg.AllocLocalTemp(typeof(TopLevel));
+      oldTopSlot.EmitSet(cg);
 
-    cg = tg.DefineStaticMethod("Main", typeof(void), typeof(string[]));
-    // TODO: set argv
-    cg.EmitNull();
-    cg.EmitCall(run);
-    cg.ILG.Emit(OpCodes.Pop);
-    cg.EmitReturn();
-    cg.Finish();
+      cg.ILG.BeginExceptionBlock();
+      cg.EmitNew(typeof(TopLevel));
+      cg.Dup();
+      topSlot.EmitSet(cg);
+      cg.EmitFieldSet(typeof(TopLevel), "Current");
 
-    tg.FinishType();
-    ag.Assembly.SetEntryPoint((MethodInfo)cg.MethodBase, fileKind);
-    if(Options.Current.Debug) ag.Module.SetUserEntryPoint((MethodInfo)cg.MethodBase);
+      if(builtins!=null)
+      { cg.EmitLanguage(Options.Current.Language);
+        cg.EmitPropGet(typeof(Language), "Builtins");
+        topSlot.EmitGet(cg);
+        cg.EmitCall(typeof(MemberContainer), "Import", typeof(TopLevel));
+      }
 
-    ag.Save();
+      #region Run
+      cg = tg.DefineStaticMethod(MethodAttributes.Private, "Run", typeof(object), typeof(LocalEnvironment));
+      cg.SetupNamespace(body.ClosedVars);
+      body.Body.Emit(cg);
+      cg.Finish();
+      #endregion
+      MethodInfo run = (MethodInfo)cg.MethodBase;
+
+      #region Constructor
+      cg = tg.DefineConstructor();
+      cg.EmitThis();
+      cg.EmitString(moduleName);
+      topSlot.EmitGet(cg);
+      cg.EmitCall(typeof(CodeModule).GetConstructor(new Type[] { typeof(string), typeof(TopLevel) }));
+
+      cg.EmitFieldGet(typeof(TopLevel), "Current");
+      Slot oldTop2 = cg.AllocLocalTemp(typeof(TopLevel));
+      oldTop2.EmitSet(cg);
+      cg.ILG.BeginExceptionBlock();
+      topSlot.EmitGet(cg);
+      cg.EmitFieldSet(typeof(TopLevel), "Current");
+      cg.EmitNull();
+      cg.EmitCall(run);
+      cg.ILG.Emit(OpCodes.Pop);
+      cg.ILG.BeginFinallyBlock();
+      oldTop2.EmitGet(cg);
+      cg.FreeLocalTemp(oldTop2);
+      cg.EmitFieldSet(typeof(TopLevel), "Current");
+      cg.ILG.EndExceptionBlock();
+      cg.EmitReturn();
+      cg.Finish();
+      #endregion
+
+      MethodInfo main = null;
+      #region Main
+      if(fileKind!=PEFileKinds.Dll)
+      { cg = tg.DefineStaticMethod("Main", typeof(void));
+        cg.EmitNew((ConstructorInfo)cg.MethodBase);
+        cg.ILG.Emit(OpCodes.Pop);
+        cg.EmitReturn();
+        cg.Finish();
+        main = (MethodInfo)cg.MethodBase;
+      }
+      #endregion
+
+      cg = tg.GetInitializer();
+      cg.ILG.BeginFinallyBlock();
+      oldTopSlot.EmitGet(cg);
+      cg.FreeLocalTemp(oldTopSlot);
+      cg.EmitFieldSet(typeof(TopLevel), "Current");
+      cg.ILG.EndExceptionBlock();
+
+      Type ret = tg.FinishType();
+
+      if(fileKind!=PEFileKinds.Dll)
+      { ag.Assembly.SetEntryPoint(main, fileKind);
+        if(Options.Current.Debug) ag.Module.SetUserEntryPoint(run);
+      }
+
+      ag.Save();
+      return ret;
+    }
+    finally { TopLevel.Current = oldTop; }
   }
   #endregion
 
@@ -279,7 +342,29 @@ public sealed class ModuleGenerator
   }
   #endregion
 
+  static string CacheTypeName() { return "ScriptModule"; }
+  static string CacheTypeName(DateTime time) { return "ScriptModule_"+time.ToFileTimeUtc(); }
+
+  static MemberContainer LoadFromCache(string dllPath) { return LoadFromCache(dllPath, CacheTypeName()); }
+  static MemberContainer LoadFromCache(string dllPath, DateTime date)
+  { return LoadFromCache(dllPath, CacheTypeName(date));
+  }
+  static MemberContainer LoadFromCache(string dllPath, string typeName)
+  { 
+    #if !DEBUG
+    if(File.Exists(dllPath))
+      try
+      { Assembly ass = Assembly.LoadFrom(dllPath);
+        Type mtype = ass.GetType(typeName);
+        if(mtype!=null && mtype.IsSubclassOf(typeof(MemberContainer)))
+          return (MemberContainer)mtype.GetConstructor(Type.EmptyTypes).Invoke(null);
+      }
+      catch { }
+    #endif
+    return null;
+  }
+
   static Index index = new Index();
 }
 
-} // namespace Scripting
+} // namespace Scripting.Backend

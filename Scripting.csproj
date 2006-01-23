@@ -119,6 +119,11 @@
                     BuildAction = "Compile"
                 />
                 <File
+                    RelPath = "Hosting.cs"
+                    SubType = "Code"
+                    BuildAction = "Compile"
+                />
+                <File
                     RelPath = "Importer.cs"
                     SubType = "Code"
                     BuildAction = "Compile"

@@ -25,14 +25,15 @@ using System.Collections.Specialized;
 using System.Globalization;
 using System.Reflection;
 using System.Reflection.Emit;
-
-namespace Scripting
-{
+using Scripting.Backend;
 
 // FIXME: if a lambda accesses top-level environment (by calling EVAL), it will get the TL of the caller,
 //        not of where it was defined
 // FIXME: implement tail-call elimination in interpreted mode
-#region Procedures
+namespace Scripting
+{
+
+#region Interfaces
 public interface IProcedure
 { int MinArgs { get; }
   int MaxArgs { get; }
@@ -45,112 +46,12 @@ public interface IFancyProcedure : IProcedure
 { object Call(object[] positional, string[] keywords, object[] values);
 }
 
-public abstract class Lambda : IFancyProcedure
-{ public int MinArgs { get { return Template.NumParams; } }
-  public int MaxArgs { get { return Template.HasList ? -1 : Template.NumParams; } }
-  public bool NeedsFreshArgs { get { return Template.ArgsClosed; } }
-
-  public abstract object Call(params object[] args);
-  public abstract object Call(object[] positional, string[] keywords, object[] values);
-
-  public override string ToString() { return Template.Name==null ? "#<lambda>" : "#<lambda '"+Template.Name+"'>"; }
-
-  public Template Template;
-}
-
-public abstract class Closure : Lambda
-{ public LocalEnvironment Environment;
-  public object[] Defaults;
-}
-
-public sealed class InterpretedProcedure : Lambda
-{ public InterpretedProcedure(string[] paramNames, Node body)
-    : this(Options.Current.Language, null, paramNames, false, false, body) { }
-  public InterpretedProcedure(Language lang, string name, string[] paramNames, bool hasList, bool hasDict, Node body)
-  { int numRequired = paramNames.Length-(hasList ? 1 : 0)-(hasDict ? 1 : 0);
-    if(numRequired<0) throw new ArgumentException("Not enough parameters to accomodate list and dictionary");
-    Template = new Template(IntPtr.Zero, lang, name, paramNames, numRequired, hasList, hasDict, false);
-    Body = body;
-  }
-  public InterpretedProcedure(string name, Parameter[] parms, Node body)
-    : this(Options.Current.Language, name, parms, body) { }
-  public InterpretedProcedure(Language lang, string name, Parameter[] parms, Node body)
-  { int numRequired, optionalStart, numOptional;
-    bool hasList, hasDict;
-    Parameter.CheckParms(parms, out numRequired, out optionalStart, out numOptional, out hasList, out hasDict);
-
-    Template = new Template(IntPtr.Zero, lang, name, Parameter.GetNames(parms), numRequired, hasList, hasDict, false);
-    Body = body;
-
-    if(numOptional!=0)
-    { Defaults = new object[numOptional];
-      for(int i=0; i<numOptional; i++) Defaults[i] = parms[i-optionalStart].Default.Evaluate();
-    }
-  }
-
-  public override object Call(params object[] args) { return DoCall(Template.FixArgs(args, Defaults)); }
-  public override object Call(object[] positional, string[] keywords, object[] values)
-  { return DoCall(Template.MakeArgs(positional, Defaults, keywords, values));
-  }
-
-  public readonly Node Body;
-  public readonly object[] Defaults;
-
-  object DoCall(object[] args)
-  { TopLevel oldt = TopLevel.Current;
-    if(Template.NumParams==0)
-      try
-      { TopLevel.Current = Template.TopLevel;
-        return Body.Evaluate();
-      }
-      finally { TopLevel.Current = oldt; }
-    else
-    { InterpreterEnvironment ne, oldi=InterpreterEnvironment.Current;
-      try
-      { InterpreterEnvironment.Current = ne = new InterpreterEnvironment(oldi);
-        TopLevel.Current = Template.TopLevel;
-        for(int i=0; i<Template.NumParams; i++) ne.Bind(Template.ParamNames[i], args[i]);
-        return Body.Evaluate();
-      }
-      finally
-      { InterpreterEnvironment.Current = oldi;
-        TopLevel.Current = oldt;
-      }
-    }
-  }
-}
-
-public abstract class SimpleProcedure : IProcedure
-{ public SimpleProcedure(string name, int min, int max) { this.name=name; this.min=min; this.max=max; }
-
-  public int MinArgs { get { return min; } }
-  public int MaxArgs { get { return max; } }
-  public string Name { get { return name; } }
-  public bool NeedsFreshArgs { get { return needsFreshArgs; } }
-
-  public abstract object Call(object[] args);
-  public override string ToString() { return name; }
-
-  protected void CheckArity(object[] args) { Ops.CheckArity(name, args.Length, min, max); }
-
-  protected string name;
-  protected int min, max;
-  protected bool needsFreshArgs;
-}
-
-public abstract class Primitive : SimpleProcedure
-{ public Primitive(string name, int min, int max) : base(name, min, max) { }
-  public override string ToString() { return string.Format("#<primitive procedure '{0}'>", name); }
-}
-#endregion
-
-#region Enums
-[Flags]
-public enum Conversion
-{ None=0,
-  // 1/3 and 8/12 are chosen to make it clear that those are mutually exclusive
-  Unsafe=1, Safe=2, Reference=3, Identity=4, UnsafeAPA=8, SafeAPA=16, RefAPA=24, PacksPA=32,
-  QualityMask=31
+public interface IProperty
+{ bool Call(object instance, out object ret, params object[] args);
+  bool Call(object instance, out object ret, object[] positional, string[] names, object[] values);
+  bool Get(object instance, out object ret);
+  bool GetAccessor(object instance, out IProcedure ret);
+  bool TrySet(object instance, object value);
 }
 #endregion
 
@@ -167,119 +68,6 @@ public sealed class Binding
   public TopLevel Environment;
 
   public readonly static object Unbound = new Singleton("<UNBOUND>");
-}
-#endregion
-
-#region Cast
-public sealed class Cast : MemberContainer
-{ public Cast(ReflectedType type, object value)
-  { ReflectedType=type; Type=type.Type; Value=value;
-    if(value!=null && !Type.IsAssignableFrom(value.GetType()))
-      throw new InvalidCastException("Attempted to cast "+Ops.TypeName(value)+" to "+Ops.TypeName(Type));
-  }
-
-  public override bool GetSlot(object instance, string name, out object ret)
-  { return ReflectedType.GetSlot(instance, name, out ret);
-  }
-
-  public override ICollection GetMemberNames(bool includeImports)
-  { return ReflectedType.GetMemberNames(includeImports);
-  }
-
-  public override void Import(TopLevel top, string[] names, string[] asNames)
-  { ReflectedType.Import(top, names, asNames);
-  }
-
-  public override bool TryDeleteSlot(object instance, string name)
-  { return ReflectedType.TryDeleteSlot(instance, name);
-  }
-
-  public override bool TrySetSlot(object instance, string name, object value)
-  { return ReflectedType.TrySetSlot(instance, name, value);
-  }
-
-  public override string ToString() { return "#<cast '"+Ops.Str(Value)+"' to "+Ops.TypeName(Type)+">"; }
-
-  public ReflectedType ReflectedType;
-  public Type Type;
-  public object Value;
-
-  public readonly static Type ClassType = typeof(Cast);
-}
-#endregion
-
-#region CallArg
-public struct CallArg
-{ public CallArg(object value, object type) { Value=value; Type=type; }
-  public object Value, Type;
-  
-  public static readonly object DictType=new Singleton("CallArg.DictType"), ListType=new Singleton("CallArg.ListType");
-}
-#endregion
-
-#region CodeModule
-public class CodeModule : MemberContainer
-{ public CodeModule(string name) { Name=name; TopLevel=new TopLevel(); }
-  public CodeModule(string name, TopLevel top) { Name=name; TopLevel=top; }
-
-  public override bool GetSlot(object instance, string name, out object ret)
-  { return TopLevel.Globals.Get(name, out ret);
-  }
-
-  public override ICollection GetMemberNames(bool includeImports)
-  { if(includeImports) return TopLevel.Globals.Dict.Keys;
-
-    ArrayList ret = new ArrayList(Math.Max(TopLevel.Globals.Dict.Count/2, 16));
-    foreach(DictionaryEntry de in TopLevel.Globals.Dict)
-    { Binding bind = (Binding)de.Value;
-      if(bind.Environment==TopLevel) ret.Add(de.Key);
-    }
-    return ret;
-  }
-
-  public override void Import(TopLevel top, string[] names, string[] asNames)
-  { if(names==null)
-    { Import(top.Globals, TopLevel.Globals, TopLevel);
-      Import(top.Macros, TopLevel.Macros, TopLevel);
-    }
-    else
-      for(int i=0; i<names.Length; i++)
-      { object ret;
-        bool found = false;
-        if(TopLevel.Globals.Get(names[i], out ret))
-        { top.Globals.Bind(asNames[i], ret, TopLevel);
-          found = true;
-        }
-        if(TopLevel.Macros.Get(names[i], out ret))
-        { top.Macros.Bind(asNames[i], ret, TopLevel);
-          found = true;
-        }
-        if(!found) throw new ArgumentException("'"+names[i]+"' not found in module "+Name);
-      }
-  }
-
-  public override bool TryDeleteSlot(object instance, string name) { TopLevel.Globals.Unbind(name); return true; }
-
-  public override bool TrySetSlot(object instance, string name, object value)
-  { TopLevel.Set(name, value);
-    return true;
-  }
-
-  public override string ToString() { return "#<module '"+Name+"'>"; }
-
-  public readonly TopLevel TopLevel;
-  public readonly string Name;
-
-  static void Import(BindingSpace to, BindingSpace from, TopLevel env)
-  { Language lang = Ops.GetCurrentLanguage();
-    foreach(DictionaryEntry de in from.Dict)
-    { string key = (string)de.Key;
-      if(!lang.ExcludeFromImport(key))
-      { Binding bind = (Binding)de.Value;
-        if(bind.Environment==env) to.Bind(key, bind.Value, env);
-      }
-    }
-  }
 }
 #endregion
 
@@ -346,6 +134,7 @@ public sealed class BindingSpace
 }
 #endregion
 
+#region InterpreterEnvironment
 public sealed class InterpreterEnvironment
 { public InterpreterEnvironment(InterpreterEnvironment parent) { this.parent=parent; dict=new ListDictionary(); }
 
@@ -368,7 +157,9 @@ public sealed class InterpreterEnvironment
 
   [ThreadStatic] public static InterpreterEnvironment Current;
 }
+#endregion
 
+#region LocalEnvironment
 public sealed class LocalEnvironment
 { public LocalEnvironment(LocalEnvironment parent, object[] values) { Parent=parent; Values=values; }
   public LocalEnvironment(LocalEnvironment parent, int length) { Parent=parent; Values=new object[length]; }
@@ -379,7 +170,9 @@ public sealed class LocalEnvironment
   public readonly LocalEnvironment Parent;
   public readonly object[] Values;
 }
+#endregion
 
+#region TopLevel
 public sealed class TopLevel
 { public void AddMacro(string name, IProcedure value) { Macros.Set(name, value, this); }
 
@@ -402,77 +195,6 @@ public sealed class TopLevel
   [ThreadStatic] public static TopLevel Current;
 }
 #endregion
-
-#region Generator
-public abstract class Generator : IEnumerator
-{ protected Generator(LocalEnvironment env) { environment=env; jump=uint.MaxValue; }
-
-  public object Current
-  { get
-    { if(state!=State.In) throw new InvalidOperationException();
-      return current;
-    }
-  }
-  
-  public bool MoveNext()
-  { try
-    { if(state==State.Done || !InnerNext(environment)) { state=State.Done; return false; }
-      state = State.In;
-      return true;
-    }
-    catch { state=State.Done; throw; }
-  }
-  
-  public void Reset() { throw new NotSupportedException(); }
-
-  protected abstract bool InnerNext(LocalEnvironment env);
-  protected uint jump;
-  protected object current;
-  
-  enum State : byte { Before, In, Done };
-  
-  readonly LocalEnvironment environment;
-  State state;
-}
-#endregion
-
-#region InstanceWrapper
-public sealed class InstanceWrapper : IProcedure
-{ public InstanceWrapper(object instance, IProcedure proc) { Instance=instance; Procedure=proc; }
-
-  public int MinArgs { get { return Math.Max(0, Procedure.MinArgs-1); } }
-
-  public int MaxArgs
-  { get
-    { int max = Procedure.MaxArgs;
-      return max==-1 ? -1 : Math.Max(0, max-1);
-    }
-  }
-
-  public bool NeedsFreshArgs { get { return false; } }
-  
-  public object Call(object[] args)
-  { object[] nargs = new object[args.Length+1];
-    nargs[0] = Instance;
-    if(args.Length!=0) args.CopyTo(nargs, 1);
-    return Procedure.Call(nargs);
-  }
-
-  public override string ToString() { return "#<method wrapper for "+Procedure.ToString()+">"; }
-
-  public readonly object Instance;
-  public readonly IProcedure Procedure;
-}
-#endregion
-
-#region IProperty
-public interface IProperty
-{ bool Call(object instance, out object ret, params object[] args);
-  bool Call(object instance, out object ret, object[] positional, string[] names, object[] values);
-  bool Get(object instance, out object ret);
-  bool GetAccessor(object instance, out IProcedure ret);
-  bool TrySet(object instance, object value);
-}
 #endregion
 
 #region MemberContainer
@@ -555,7 +277,13 @@ public abstract class MemberContainer
     else
     { IProcedure proc = Ops.MakeProcedure(ret);
       if(proc==null) { ret=null; return false; }
-      else { ret=proc.Call(args); return true; }
+      else
+      { // FIXME: this (and the other stuff like it in DotNetInterop.cs) is inefficient, and is exactly what i was trying to get away from with this new system...
+        object[] nargs = new object[args.Length-1];
+        Array.Copy(args, 1, nargs, 0, nargs.Length);
+        ret = proc.Call(nargs);
+        return true;
+      }
     }
   }
 
@@ -751,7 +479,7 @@ public sealed class Ops
   { ReflectedType rt = obj as ReflectedType;
     if(rt!=null) return rt;
     Type type = obj as Type;
-    if(type!=null) return ReflectedType.FromType(type);
+    if(type!=null) return Backend.ReflectedType.FromType(type);
     throw new ArgumentException("expected type but received "+TypeName(obj));
   }
 
@@ -1315,7 +1043,8 @@ public sealed class Ops
                        : ExpectFancyProcedure(func).Call(positional, names, values);
   }
 
-  public static void EvaluateCallArgs(CallArg[] args, out object[] positional, out string[] names, out object[] values)
+  public static void EvaluateCallArgs(CallArg[] args, out object[] positional,
+                                      out string[] names, out object[] values)
   { int ai=0, pi=0, num=0;
     bool hasdict = false;
 
@@ -1698,9 +1427,323 @@ public sealed class Ops
 }
 #endregion
 
+#region Primitive
+public abstract class Primitive : SimpleProcedure
+{ public Primitive(string name, int min, int max) : base(name, min, max) { }
+  public override string ToString() { return string.Format("#<primitive procedure '{0}'>", name); }
+}
+#endregion
+
+#region ScriptComparer
+public sealed class ScriptComparer : IComparer
+{ public ScriptComparer(IProcedure proc)
+  { if(proc!=null) { this.proc=proc; args=new object[2]; }
+  }
+
+  public int Compare(object a, object b)
+  { if(proc==null) return Ops.Compare(a, b);
+    else
+    { args[0] = a;
+      args[1] = b;
+      return Ops.ToInt(proc.Call(args));
+    }
+  }
+
+  public static readonly ScriptComparer Default = new ScriptComparer(null);
+
+  IProcedure proc;
+  object[] args;
+}
+#endregion
+
+} // namespace Scripting
+
+namespace Scripting.Backend
+{
+
+#region Enums
+[Flags]
+public enum Conversion
+{ None=0,
+  // 1/3 and 8/12 are chosen to make it clear that those are mutually exclusive
+  Unsafe=1, Safe=2, Reference=3, Identity=4, UnsafeAPA=8, SafeAPA=16, RefAPA=24, PacksPA=32,
+  QualityMask=31
+}
+#endregion
+
+#region Cast
+public sealed class Cast : MemberContainer
+{ public Cast(ReflectedType type, object value)
+  { ReflectedType=type; Type=type.Type; Value=value;
+    if(value!=null && !Type.IsAssignableFrom(value.GetType()))
+      throw new InvalidCastException("Attempted to cast "+Ops.TypeName(value)+" to "+Ops.TypeName(Type));
+  }
+
+  public override bool GetSlot(object instance, string name, out object ret)
+  { return ReflectedType.GetSlot(instance, name, out ret);
+  }
+
+  public override ICollection GetMemberNames(bool includeImports)
+  { return ReflectedType.GetMemberNames(includeImports);
+  }
+
+  public override void Import(TopLevel top, string[] names, string[] asNames)
+  { ReflectedType.Import(top, names, asNames);
+  }
+
+  public override bool TryDeleteSlot(object instance, string name)
+  { return ReflectedType.TryDeleteSlot(instance, name);
+  }
+
+  public override bool TrySetSlot(object instance, string name, object value)
+  { return ReflectedType.TrySetSlot(instance, name, value);
+  }
+
+  public override string ToString() { return "#<cast '"+Ops.Str(Value)+"' to "+Ops.TypeName(Type)+">"; }
+
+  public ReflectedType ReflectedType;
+  public Type Type;
+  public object Value;
+
+  public readonly static Type ClassType = typeof(Cast);
+}
+#endregion
+
+#region CallArg
+public struct CallArg
+{ public CallArg(object value, object type) { Value=value; Type=type; }
+  public object Value, Type;
+  
+  public static readonly object DictType=new Singleton("CallArg.DictType"), ListType=new Singleton("CallArg.ListType");
+}
+#endregion
+
+#region CodeModule
+public class CodeModule : MemberContainer
+{ public CodeModule(string name) { Name=name; TopLevel=new TopLevel(); }
+  public CodeModule(string name, TopLevel top) { Name=name; TopLevel=top; }
+
+  public override bool GetSlot(object instance, string name, out object ret)
+  { return TopLevel.Globals.Get(name, out ret);
+  }
+
+  public override ICollection GetMemberNames(bool includeImports)
+  { if(includeImports) return TopLevel.Globals.Dict.Keys;
+
+    ArrayList ret = new ArrayList(Math.Max(TopLevel.Globals.Dict.Count/2, 16));
+    foreach(DictionaryEntry de in TopLevel.Globals.Dict)
+    { Binding bind = (Binding)de.Value;
+      if(bind.Environment==TopLevel) ret.Add(de.Key);
+    }
+    return ret;
+  }
+
+  public override void Import(TopLevel top, string[] names, string[] asNames)
+  { if(names==null)
+    { Import(top.Globals, TopLevel.Globals, TopLevel);
+      Import(top.Macros, TopLevel.Macros, TopLevel);
+    }
+    else
+      for(int i=0; i<names.Length; i++)
+      { object ret;
+        bool found = false;
+        if(TopLevel.Globals.Get(names[i], out ret))
+        { top.Globals.Bind(asNames[i], ret, TopLevel);
+          found = true;
+        }
+        if(TopLevel.Macros.Get(names[i], out ret))
+        { top.Macros.Bind(asNames[i], ret, TopLevel);
+          found = true;
+        }
+        if(!found) throw new ArgumentException("'"+names[i]+"' not found in module "+Name);
+      }
+  }
+
+  public override bool TryDeleteSlot(object instance, string name) { TopLevel.Globals.Unbind(name); return true; }
+
+  public override bool TrySetSlot(object instance, string name, object value)
+  { TopLevel.Set(name, value);
+    return true;
+  }
+
+  public override string ToString() { return "#<module '"+Name+"'>"; }
+
+  public readonly TopLevel TopLevel;
+  public readonly string Name;
+
+  static void Import(BindingSpace to, BindingSpace from, TopLevel env)
+  { Language lang = Ops.GetCurrentLanguage();
+    foreach(DictionaryEntry de in from.Dict)
+    { string key = (string)de.Key;
+      if(!lang.ExcludeFromImport(key))
+      { Binding bind = (Binding)de.Value;
+        if(bind.Environment==env) to.Bind(key, bind.Value, env);
+      }
+    }
+  }
+}
+#endregion
+
+#region Generator
+public abstract class Generator : IEnumerator
+{ protected Generator(LocalEnvironment env) { environment=env; jump=uint.MaxValue; }
+
+  public object Current
+  { get
+    { if(state!=State.In) throw new InvalidOperationException();
+      return current;
+    }
+  }
+  
+  public bool MoveNext()
+  { try
+    { if(state==State.Done || !InnerNext(environment)) { state=State.Done; return false; }
+      state = State.In;
+      return true;
+    }
+    catch { state=State.Done; throw; }
+  }
+  
+  public void Reset() { throw new NotSupportedException(); }
+
+  protected abstract bool InnerNext(LocalEnvironment env);
+  protected uint jump;
+  protected object current;
+  
+  enum State : byte { Before, In, Done };
+  
+  readonly LocalEnvironment environment;
+  State state;
+}
+#endregion
+
+#region InstanceWrapper
+public sealed class InstanceWrapper : IProcedure
+{ public InstanceWrapper(object instance, IProcedure proc) { Instance=instance; Procedure=proc; }
+
+  public int MinArgs { get { return Math.Max(0, Procedure.MinArgs-1); } }
+
+  public int MaxArgs
+  { get
+    { int max = Procedure.MaxArgs;
+      return max==-1 ? -1 : Math.Max(0, max-1);
+    }
+  }
+
+  public bool NeedsFreshArgs { get { return false; } }
+  
+  public object Call(object[] args)
+  { object[] nargs = new object[args.Length+1];
+    nargs[0] = Instance;
+    if(args.Length!=0) args.CopyTo(nargs, 1);
+    return Procedure.Call(nargs);
+  }
+
+  public override string ToString() { return "#<method wrapper for "+Procedure.ToString()+">"; }
+
+  public readonly object Instance;
+  public readonly IProcedure Procedure;
+}
+#endregion
+
+#region Procedures
+public abstract class Lambda : IFancyProcedure
+{ public int MinArgs { get { return Template.NumParams; } }
+  public int MaxArgs { get { return Template.HasList ? -1 : Template.NumParams; } }
+  public bool NeedsFreshArgs { get { return Template.ArgsClosed; } }
+
+  public abstract object Call(params object[] args);
+  public abstract object Call(object[] positional, string[] keywords, object[] values);
+
+  public override string ToString() { return Template.Name==null ? "#<lambda>" : "#<lambda '"+Template.Name+"'>"; }
+
+  public Template Template;
+}
+
+public abstract class Closure : Lambda
+{ public LocalEnvironment Environment;
+  public object[] Defaults;
+}
+
+public sealed class InterpretedProcedure : Lambda
+{ public InterpretedProcedure(string[] paramNames, Node body)
+    : this(Options.Current.Language, null, paramNames, false, false, body) { }
+  public InterpretedProcedure(Language lang, string name, string[] paramNames, bool hasList, bool hasDict, Node body)
+  { int numRequired = paramNames.Length-(hasList ? 1 : 0)-(hasDict ? 1 : 0);
+    if(numRequired<0) throw new ArgumentException("Not enough parameters to accomodate list and dictionary");
+    Template = new Template(IntPtr.Zero, lang, name, paramNames, numRequired, hasList, hasDict, false);
+    Body = body;
+  }
+  public InterpretedProcedure(string name, Parameter[] parms, Node body)
+    : this(Options.Current.Language, name, parms, body) { }
+  public InterpretedProcedure(Language lang, string name, Parameter[] parms, Node body)
+  { int numRequired, optionalStart, numOptional;
+    bool hasList, hasDict;
+    Parameter.CheckParms(parms, out numRequired, out optionalStart, out numOptional, out hasList, out hasDict);
+
+    Template = new Template(IntPtr.Zero, lang, name, Parameter.GetNames(parms), numRequired, hasList, hasDict, false);
+    Body = body;
+
+    if(numOptional!=0)
+    { Defaults = new object[numOptional];
+      for(int i=0; i<numOptional; i++) Defaults[i] = parms[i-optionalStart].Default.Evaluate();
+    }
+  }
+
+  public override object Call(params object[] args) { return DoCall(Template.FixArgs(args, Defaults)); }
+  public override object Call(object[] positional, string[] keywords, object[] values)
+  { return DoCall(Template.MakeArgs(positional, Defaults, keywords, values));
+  }
+
+  public readonly Node Body;
+  public readonly object[] Defaults;
+
+  object DoCall(object[] args)
+  { TopLevel oldt = TopLevel.Current;
+    if(Template.NumParams==0)
+      try
+      { TopLevel.Current = Template.TopLevel;
+        return Body.Evaluate();
+      }
+      finally { TopLevel.Current = oldt; }
+    else
+    { InterpreterEnvironment ne, oldi=InterpreterEnvironment.Current;
+      try
+      { InterpreterEnvironment.Current = ne = new InterpreterEnvironment(oldi);
+        TopLevel.Current = Template.TopLevel;
+        for(int i=0; i<Template.NumParams; i++) ne.Bind(Template.ParamNames[i], args[i]);
+        return Body.Evaluate();
+      }
+      finally
+      { InterpreterEnvironment.Current = oldi;
+        TopLevel.Current = oldt;
+      }
+    }
+  }
+}
+
+public abstract class SimpleProcedure : IProcedure
+{ public SimpleProcedure(string name, int min, int max) { this.name=name; this.min=min; this.max=max; }
+
+  public int MinArgs { get { return min; } }
+  public int MaxArgs { get { return max; } }
+  public string Name { get { return name; } }
+  public bool NeedsFreshArgs { get { return needsFreshArgs; } }
+
+  public abstract object Call(object[] args);
+  public override string ToString() { return name; }
+
+  protected void CheckArity(object[] args) { Ops.CheckArity(name, args.Length, min, max); }
+
+  protected string name;
+  protected int min, max;
+  protected bool needsFreshArgs;
+}
+#endregion
+
 #region Reference
 public sealed class Reference
-{ public Reference(object value) { Value=value; }
+{ public Reference(object value) { Value = value; }
   public override string ToString() { return "#<reference>"; }
   public object Value;
 }
@@ -1709,16 +1752,16 @@ public sealed class Reference
 #region RG (stuff that can't be written in C#)
 public sealed class RG
 { static RG()
-  { if(System.IO.File.Exists(ModuleGenerator.CachePath+"Scripting.LowLevel.dll")) 
+  { string dllPath = System.IO.Path.Combine(Scripting.DllCache, "Scripting.LowLevel.dll");
+    if(System.IO.File.Exists(dllPath)) 
       try
-      { Assembly ass = Assembly.LoadFrom(ModuleGenerator.CachePath+"Scripting.LowLevel.dll");
+      { Assembly ass = Assembly.LoadFrom(dllPath);
         ClosureType = ass.GetType("Scripting.ClosureF", true);
         return;
       }
       catch { }
 
-    AssemblyGenerator ag = new AssemblyGenerator("Scripting.LowLevel",
-                                                 ModuleGenerator.CachePath+"Scripting.LowLevel.dll", false);
+    AssemblyGenerator ag = new AssemblyGenerator("Scripting.LowLevel", dllPath, false);
     TypeGenerator tg;
     CodeGenerator cg;
 
@@ -1837,28 +1880,6 @@ public sealed class RG
 }
 #endregion
 
-#region ScriptComparer
-public sealed class ScriptComparer : IComparer
-{ public ScriptComparer(IProcedure proc)
-  { if(proc!=null) { this.proc=proc; args=new object[2]; }
-  }
-
-  public int Compare(object a, object b)
-  { if(proc==null) return Ops.Compare(a, b);
-    else
-    { args[0] = a;
-      args[1] = b;
-      return Ops.ToInt(proc.Call(args));
-    }
-  }
-
-  public static readonly ScriptComparer Default = new ScriptComparer(null);
-
-  IProcedure proc;
-  object[] args;
-}
-#endregion
-
 #region Template
 public sealed class Template
 { public Template(IntPtr func, Language language, string name, string[] paramNames, int numRequired,
@@ -1953,11 +1974,11 @@ public sealed class Template
 }
 #endregion
 
-#region Void
+/*#region Void
 public sealed class Void
 { Void() { }
   public static readonly Void Value = new Void();
 }
-#endregion
+#endregion*/
 
-} // namespace Scripting
+} // namespace Scripting.Backend

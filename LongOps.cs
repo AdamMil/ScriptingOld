@@ -23,7 +23,7 @@ using System;
 using System.Collections;
 using System.Globalization;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 public sealed class LongOps
@@ -512,4 +512,4 @@ public sealed class LongOps
   internal static object Reduce(long value) { return ((ulong)value>>32)==0 ? (int)(uint)value : (object)value; }
 }
 
-} // namespace Scripting
+} // namespace Scripting.Backend

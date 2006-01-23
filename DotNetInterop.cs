@@ -26,7 +26,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Reflection.Emit;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 #region Some docs
@@ -49,21 +49,21 @@ namespace Scripting
   SetSlot     N/A
   GetProperty Gets raw slot
   SetProperty Sets raw slot
-  Call        Casts raw slot to a function and calls it
+  Call        Casts raw slot to a function and calls it, without 'instance'
   Accessor    Returns an object that gets/sets the "m" slot of an object
 
   .NET field  Behavior
   ------------------------------------------------------
   GetProperty returns value
   SetProperty sets value
-  Call        gets value, casts to a function, and calls it
+  Call        gets value, casts to a function, and calls it without 'instance'
   Accessor    returns raw method
 
   .NET property
   ------------------------------------------------------
   GetProperty returns value if not indexer, else error
   SetProperty sets value if not indexer, else error
-  Call        if not indexer, gets value, casts to function and calls it. otherwise gets/sets value using args as index
+  Call        if not indexer, gets value, casts to function and calls it without 'index'. otherwise gets/sets value using args as index
   Accessor    returns object for getting and setting
 
   .NET method
@@ -349,16 +349,15 @@ public sealed class Interop
   public static IProcedure MakeProcedure(Delegate del)
   { Type type = del.GetType();
     CreateProcedure cr;
-    lock(dcallers) cr = (CreateProcedure)dcallers[type];
-
-    if(cr==null)
-    { MethodInfo mi = type.GetMethod("Invoke");
-      Type wrapper = ImplementSignatureWrapper(new Signature(mi, true), mi, "dc$"+dci.Next, type, false);
-      lock(dcallers)
+    lock(dcallers)
+    { cr = (CreateProcedure)dcallers[type];
+      if(cr==null)
+      { MethodInfo mi = type.GetMethod("Invoke");
+        Type wrapper = ImplementSignatureWrapper(new Signature(mi, true), mi, "dc$"+dci.Next, type, false);
         dcallers[type] = cr =
           (CreateProcedure)Delegate.CreateDelegate(typeof(CreateProcedure), wrapper.GetMethod("Create"));
+      }
     }
-
     return cr(del);
   }
 
@@ -1068,12 +1067,15 @@ public sealed class ReflectedNamespace : MemberContainer
   { Interop.LoadStandardAssemblies();
 
     ReflectedNamespace rns, top;
-    lock(cache) top = (ReflectedNamespace)cache[bits[0]];
 
-    if(top==null)
-    { top = new ReflectedNamespace(bits[0]);
-      lock(cache) cache[bits[0]] = top;
+    lock(cache)
+    { top = (ReflectedNamespace)cache[bits[0]];
+      if(top==null)
+      { top = new ReflectedNamespace(bits[0]);
+        cache[bits[0]] = top;
+      }
     }
+
     rns = top;
 
     string ns = bits[0];
@@ -1583,4 +1585,4 @@ public abstract class StructCreator : FunctionWrapper
 }
 #endregion
 
-} // namespace Scripting
+} // namespace Scripting.Backend

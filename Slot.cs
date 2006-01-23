@@ -24,7 +24,7 @@ using System.Collections;
 using System.Reflection;
 using System.Reflection.Emit;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 #region Slot
@@ -296,4 +296,4 @@ public sealed class ThisSlot : Slot
 }
 #endregion
 
-} // namespace Scripting
+} // namespace Scripting.Backend
