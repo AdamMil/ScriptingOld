@@ -22,7 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 using System;
 using System.Text;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 public sealed class StringOps
@@ -36,4 +36,4 @@ public sealed class StringOps
   }
 }
 
-} // namespace Scripting
+} // namespace Scripting.Backend

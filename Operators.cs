@@ -25,7 +25,7 @@ using System.Reflection.Emit;
 
 // FIXME: the comparison operators short-circuit when Emitted but not when Evaluated. decide which way is more desirable
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 #region Operator
@@ -821,4 +821,4 @@ public sealed class LogicalOrOperator : Operator
 #endregion
 #endregion
 
-} // namespace Scripting
+} // namespace Scripting.Backend

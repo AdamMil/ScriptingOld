@@ -26,7 +26,7 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Reflection.Emit;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 #region Namespace
@@ -150,4 +150,4 @@ public sealed class TopLevelNamespace : Namespace
 }
 #endregion
 
-} // namespace Scripting
+} // namespace Scripting.Backend

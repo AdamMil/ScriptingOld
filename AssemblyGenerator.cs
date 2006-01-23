@@ -25,7 +25,7 @@ using System.Reflection.Emit;
 using System.Diagnostics;
 using System.Diagnostics.SymbolStore;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 public sealed class AssemblyGenerator
@@ -40,7 +40,7 @@ public sealed class AssemblyGenerator
     : this(AppDomain.CurrentDomain, moduleName, outFileName, debug) { }
   public AssemblyGenerator(AppDomain domain, string moduleName, string outFileName, bool debug)
   { string dir = System.IO.Path.GetDirectoryName(outFileName);
-    if(dir=="") dir=null;
+    if(dir=="") dir = null;
     outFileName = System.IO.Path.GetFileName(outFileName);
 
     AssemblyName an = new AssemblyName();
@@ -92,4 +92,4 @@ public sealed class AssemblyGenerator
   static Index index = new Index();
 }
 
-} // namespace Scripting
+} // namespace Scripting.Backend

@@ -21,14 +21,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 using System;
 using System.Collections;
+using System.Collections.Specialized;
 using System.IO;
 using System.Reflection;
+using Scripting.Backend;
 
 namespace Scripting
 {
 
 public sealed class Importer
 { Importer() { }
+  static Importer() { SearchPaths.Add("."); }
 
   public static void Import(TopLevel top, IDictionary dict, TopLevel env,
                             string[] names, string[] asNames, string myName)
@@ -49,19 +52,22 @@ public sealed class Importer
   { MemberContainer module, top;
     bool returnNow = false;
 
-    // FIXME: this caching with the bits[0] and the top, etc, is pretty crappy. fix it.
-    lock(LoadedModules) module = (MemberContainer)LoadedModules[name];
-    if(module!=null) return module;
-
     string[] bits = name.Split('.');
-    top = LoadFromPath(name);
-    if(top==null) top = LoadBuiltin(bits[0]);
-    if(top==null)
-    { top = LoadFromDotNet(bits, true);
-      if(top!=null && returnTop) returnNow = true;
+
+    lock(LoadedModules)
+    { top = (MemberContainer)LoadedModules[bits[0]];
+      if(top==null)
+      { top = LoadFromPath(bits[0]);
+        if(top==null) top = LoadBuiltin(bits[0]);
+        if(top==null)
+        { top = LoadFromDotNet(bits);
+          if(top!=null && returnTop) returnNow = true;
+        }
+
+        if(top!=null) lock(LoadedModules) LoadedModules[bits[0]] = top;
+      }
     }
 
-    if(top!=null && bits.Length!=1) lock(LoadedModules) LoadedModules[bits[0]] = top;
     if(returnNow) return top;
 
     module = top;
@@ -70,8 +76,6 @@ public sealed class Importer
       if(!module.GetProperty(module, bits[i], out obj)) goto error;
       module = obj as MemberContainer;
     }
-
-    if(module!=null) lock(LoadedModules) LoadedModules[name] = module;
 
     if(returnTop) module = top;
     if(module!=null || !throwOnError) return module;
@@ -85,36 +89,54 @@ public sealed class Importer
     return module;
   }
 
-  public static Hashtable LoadedModules = new Hashtable();
+  public static readonly ArrayList SearchPaths = new ArrayList();
+  public static readonly Hashtable LoadedModules = new Hashtable();
 
   static MemberContainer LoadBuiltin(string name)
   { string ns = Ops.GetCurrentLanguage().BuiltinsNamespace;
     if(ns==null) return null;
 
-    if(builtinNames==null)
-    { builtinNames = new SortedList();
-      foreach(Type type in Ops.GetCurrentLanguage().GetType().Assembly.GetTypes())
-        if(type.IsPublic && type.Namespace==ns)
-        { object[] attrs = type.GetCustomAttributes(typeof(ScriptNameAttribute), false);
-          if(attrs.Length!=0) builtinNames[((ScriptNameAttribute)attrs[0]).Name] = type;
-        }
+    IDictionary dict;
+    lock(builtinNamespaces)
+    { dict = (IDictionary)builtinNamespaces[ns];
+      if(dict==null)
+      { builtinNamespaces[ns] = dict = new SortedList(4);
+        foreach(Type type in Ops.GetCurrentLanguage().GetType().Assembly.GetTypes())
+          if(type.IsPublic && type.Namespace==ns)
+          { object[] attrs = type.GetCustomAttributes(typeof(ScriptNameAttribute), false);
+            if(attrs.Length!=0) dict[((ScriptNameAttribute)attrs[0]).Name] = type;
+          }
+      }
     }
 
-    { Type type = (Type)builtinNames[name];
-      if(type==null) type = Interop.GetType(ns+"."+name);
+    { Type type = (Type)dict[name];
+      if(type==null)
+      { name = ns+"."+name;
+        type = Ops.GetCurrentLanguage().GetType().Assembly.GetType(name);
+        if(type==null) type = Type.GetType(name);
+      }
       return type==null ? null : Load(type);
     }
   }
 
-  static MemberContainer LoadFromDotNet(string[] bits, bool returnTop)
-  { ReflectedNamespace rns = ReflectedNamespace.FromName(bits, returnTop);
+  static MemberContainer LoadFromDotNet(string[] bits)
+  { ReflectedNamespace rns = ReflectedNamespace.FromName(bits, true);
     return rns.GetMemberNames().Count==0 ? null : rns;
   }
 
-  static MemberContainer LoadFromPath(string name) { return null; } // TODO: implement this
-
+  static MemberContainer LoadFromPath(string bit)
+  { foreach(string search in SearchPaths)
+    { string dir=search, path=Path.Combine(dir, bit), name=bit;
+      if(Directory.Exists(path)) { dir=path; name="__init__"; }
+      foreach(string file in Directory.GetFiles(dir, name+".*"))
+        if(Scripting.IsRegistered(Path.GetExtension(file)))
+          return ModuleGenerator.Generate(Path.Combine(dir, file));
+    }
+    return null;
+  }
+  
   static readonly Hashtable builtinTypes = new Hashtable();
-  static SortedList builtinNames;
+  static readonly ListDictionary builtinNamespaces = new ListDictionary();
 }
 
 } // namespace Scripting

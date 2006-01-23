@@ -23,7 +23,7 @@ using System;
 using System.Collections;
 using System.Globalization;
 
-namespace Scripting
+namespace Scripting.Backend
 {
 
 public sealed class IntegerOps
@@ -496,4 +496,4 @@ public sealed class IntegerOps
   }
 }
 
-} // namespace Scripting
+} // namespace Scripting.Backend
