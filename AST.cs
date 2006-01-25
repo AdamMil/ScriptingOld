@@ -20,7 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 using System;
-using System.Collections;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -81,7 +81,7 @@ public sealed class AST
   sealed class NodeDecorator : IWalker, IDisposable
   { public NodeDecorator(LambdaNode top)
     { func = this.top = top;
-      if(top!=null) { bound=CachedArray.Alloc(); free=CachedArray.Alloc(); values=CachedArray.Alloc(); }
+      if(top!=null) { bound=CachedList<Name>.Alloc(); free=CachedList<Name>.Alloc(); values=CachedList<object>.Alloc(); }
       optimize = Options.Current.Optimize;
     }
 
@@ -90,7 +90,9 @@ public sealed class AST
       if(free!=null) free.Dispose();
       if(values!=null) values.Dispose();
       if(yields!=null) yields.Dispose();
-      bound = free = values = yields = null;
+      bound = free = null;
+      values = null;
+      yields = null;
     }
 
     public bool Walk(Node node)
@@ -119,13 +121,13 @@ public sealed class AST
         }
         else
         { int oldFree=freeStart, oldBound=boundStart, oldBlock=blockStart, oldYield=yieldStart;
-          CachedArray oldClosedParams=closedParams, oldClosedVars=closedVars;
+          CachedList<Name> oldClosedParams=closedParams, oldClosedVars=closedVars;
 
           freeStart  = free.Count;
           boundStart = bound.Count;
           blockStart = blocks==null ? 0 : blocks.Count;
           yieldStart = yields==null ? 0 : yields.Count;
-          closedVars = CachedArray.Alloc(); closedParams = CachedArray.Alloc();
+          closedVars = CachedList<Name>.Alloc(); closedParams = CachedList<Name>.Alloc();
 
           if(gen==null)
             foreach(Parameter parm in func.Parameters)
@@ -135,7 +137,7 @@ public sealed class AST
 
           if(gen==null) func.Body.Walk(this);
           else
-          { if(yields==null) yields = CachedArray.Alloc();
+          { if(yields==null) yields = CachedList<YieldNode>.Alloc();
             gen.Body.Walk(this);
             gen.Yields = new YieldNode[yields.Count-yieldStart];
             yields.CopyTo(yieldStart, gen.Yields, 0, gen.Yields.Length);
@@ -296,7 +298,7 @@ public sealed class AST
         }
         else if(node is BlockNode)
         { BlockNode bn = (BlockNode)node;
-          if(blocks==null) blocks = CachedArray.Alloc();
+          if(blocks==null) blocks = CachedList<BlockNode>.Alloc();
           bn.Parent = blocks.Count==blockStart ? null : (BlockNode)blocks[blocks.Count-1];
           blocks.Add(bn);
         }
@@ -304,8 +306,9 @@ public sealed class AST
         { if(gen==null) throw Ops.SyntaxError(node, "yield clauses disallowed outside generators");
           YieldNode yn = (YieldNode)node;
           yn.Generator   = gen;
-          yn.YieldNumber = (uint)yields.Add(yn);
-          
+          yn.YieldNumber = (uint)yields.Count;
+          yields.Add(yn);
+
           int numTries = 0;
           ExceptionNode ex = inTry;
           while(ex!=null) { numTries++; ex=ex.InTry; }
@@ -350,10 +353,14 @@ public sealed class AST
       node.Postprocess();
     }
 
-    int IndexOf(string name, IList list) // these are kind of DWIMish
-    { if(list==bound) return IndexOf(name, list, boundStart, list.Count);
-      if(list==free)  return IndexOf(name, list, freeStart, list.Count);
-      for(int i=0; i<list.Count; i++) if(((Parameter)list[i]).Name.String==name) return i;
+    int IndexOf(string name, List<Name> list) // a bit DWIMish...
+    { if(list==bound) return IndexOf(name, bound, boundStart, list.Count);
+      if(list==free)  return IndexOf(name, free, freeStart, list.Count);
+      return -1;
+    }
+
+    int IndexOf(string name, Parameter[] list)
+    { for(int i=0; i<list.Length; i++) if(list[i].Name.String==name) return i;
       return -1;
     }
 
@@ -383,13 +390,16 @@ public sealed class AST
     LambdaNode func, top;
     GeneratorNode gen;
     ExceptionNode inTry;
-    CachedArray blocks, bound, free, values, closedVars, closedParams, yields;
+    CachedList<BlockNode> blocks;
+    CachedList<YieldNode> yields;
+    CachedList<Name> bound, free, closedVars, closedParams;
+    CachedList<object> values;
     int boundStart, freeStart, blockStart, yieldStart;
     OptimizeType optimize;
     bool inCatch;
 
-    static int IndexOf(string name, IList list, int start, int end)
-    { for(end--; end>=start; end--) if(((Name)list[end]).String==name) return end;
+    static int IndexOf(string name, List<Name> list, int start, int end)
+    { for(end--; end>=start; end--) if(list[end].String==name) return end;
       return -1;
     }
   }
@@ -438,19 +448,19 @@ public sealed class Options
   public bool Debug, DebugModules, IsPreCompilation;
   
   public static Options Current
-  { get { return Pushed==null || Pushed.Count==0 ? Default : (Options)Pushed.Peek(); }
+  { get { return Pushed==null || Pushed.Count==0 ? Default : Pushed.Peek(); }
   }
 
   public static void Restore() { Pushed.Pop(); }
 
   public static void Save()
-  { if(Pushed==null) Pushed = new Stack();
-    Pushed.Push(Current.MemberwiseClone());
+  { if(Pushed==null) Pushed = new Stack<Options>();
+    Pushed.Push((Options)Current.MemberwiseClone());
   }
 
   public static Options Default = new Options();
 
-  [ThreadStatic] static Stack Pushed;
+  [ThreadStatic] static Stack<Options> Pushed;
 }
 #endregion
 
@@ -648,29 +658,29 @@ public struct Argument
 }
 #endregion
 
-#region CachedArray
-public sealed class CachedArray : ArrayList, IDisposable
+#region CachedList
+public sealed class CachedList<T> : List<T>, IDisposable
 { public void Dispose()
   { if(!disposed)
-    { CachedArray.Free(this);
+    { CachedList<T>.Free(this);
       disposed = true;
     }
   }
 
-  const int MaxArrays = 32;
+  const int MaxArrays = 16;
 
-  public static CachedArray Alloc()
-  { lock(arrays) return arrays.Count==0 ? new CachedArray() : (CachedArray)arrays.Pop();
+  public static CachedList<T> Alloc()
+  { lock(arrays) return arrays.Count==0 ? new CachedList<T>() : arrays.Pop();
   }
 
-  public static void Free(CachedArray array)
+  public static void Free(CachedList<T> array)
   { array.Clear();
     lock(arrays) if(arrays.Count<MaxArrays) arrays.Push(array);
   }
 
   bool disposed;
 
-  static readonly Stack arrays = new Stack();
+  static readonly Stack<CachedList<T>> arrays = new Stack<CachedList<T>>();
 }
 #endregion
 
@@ -713,7 +723,7 @@ public sealed class Index
 #region Language
 public abstract class Language
 { static Language()
-  { ops = new SortedList();
+  { ops = new SortedList<string,object>();
     foreach(string s in new string[] { "string[]", "object[]" }) ops[s] = null;
 
     ops["**%"] = typeof(Ops).GetMethod("PowerMod");
@@ -890,7 +900,8 @@ public abstract class Language
   // TODO: allow support for real name to be used in error messages
   #region EvaluateConstantFunction
   public virtual bool EvaluateConstantFunction(string name, Node[] args, out object result)
-  { Operator op = ops[name] as Operator;
+  { ops.TryGetValue(name, out result);
+    Operator op = result as Operator;
     if(op!=null) { result=op.Evaluate(name, args); return true; }
     if(!IsConstantFunction(name)) { result=null; return false; }
 
@@ -939,7 +950,8 @@ public abstract class Language
 
   #region InlineFunction
   public virtual bool InlineFunction(CodeGenerator cg, string name, CallNode node, ref Type etype)
-  { object op = ops[name];
+  { object op;
+    ops.TryGetValue(name, out op);
     Node[] args = node.GetArgNodes();
 
     if(op is Operator)
@@ -1044,7 +1056,9 @@ public abstract class Language
   { return new CodeGenerator(tg, mb, ilg);
   }
 
-  public virtual IDictionary MakeKeywordDict() { return new System.Collections.Specialized.HybridDictionary(); }
+  public virtual System.Collections.IDictionary MakeKeywordDict()
+  { return new System.Collections.Specialized.HybridDictionary();
+  }
 
   public Node Parse(string code) { return Parse("<unknown>", code); }
 
@@ -1079,7 +1093,7 @@ public abstract class Language
 
   readonly Index GenNames = new Index();
 
-  static readonly SortedList ops;
+  static readonly SortedList<string,object> ops;
   static readonly string[] constants;
 }
 
@@ -1155,7 +1169,7 @@ public struct Parameter
   
   public static void CheckParms(Parameter[] parms, out int numRequired, out int optionalStart, out int numOptional,
                                 out bool hasList, out bool hasDict)
-  { using(CachedArray names=CachedArray.Alloc())
+  { using(CachedList<string> names=CachedList<string>.Alloc())
     { bool os = false;
       numRequired = optionalStart = numOptional = 0;
       hasList = hasDict = false;
@@ -1163,7 +1177,7 @@ public struct Parameter
       for(int i=0; i<parms.Length; i++)
       { if(names.Contains(parms[i].Name.String))
           throw new ArgumentException("duplicate parameter: "+parms[i].Name.String);
-        names.Add(parms[i].Name);
+        names.Add(parms[i].Name.String);
         switch(parms[i].Type)
         { case ParamType.Required:
             if(os) throw new ArgumentException("required parameters must precede optional parameters");
@@ -1940,9 +1954,9 @@ public class DeleteNode : SetNodeBase
   }
 
   public override MutatedName[] GetMutatedNames()
-  { using(CachedArray names = CachedArray.Alloc())
+  { using(CachedList<MutatedName> names = CachedList<MutatedName>.Alloc())
     { foreach(Node n in Nodes) GetMutatedNames(names, n);
-      return (MutatedName[])names.ToArray(typeof(MutatedName));
+      return names.ToArray();
     }
   }
 
@@ -1984,7 +1998,7 @@ public class DeleteNode : SetNodeBase
   }
 
   // TODO: currently, this has to be kept in sync with SetNodeBase.GetMutatedNames(), and the same for UpdateNames(). fix that.
-  protected virtual void GetMutatedNames(IList names, Node lhs)
+  protected virtual void GetMutatedNames(IList<MutatedName> names, Node lhs)
   { if(lhs is VariableNode) names.Add(new MutatedName(((VariableNode)lhs).Name));
     else if(!(lhs is GetSlotNode)) throw UnhandledNodeType(lhs);
   }
@@ -2203,7 +2217,7 @@ public abstract class ExceptionNode : Node
             }
 
             object ret;
-            if(ExceptionStack==null) ExceptionStack = new Stack();
+            if(ExceptionStack==null) ExceptionStack = new Stack<Exception>();
             ExceptionStack.Push(e);
 
             if(ex.Var==null)
@@ -2266,7 +2280,7 @@ public abstract class ExceptionNode : Node
   public readonly Except[] Excepts;
   public YieldNode[] Yields;
 
-  [ThreadStatic] public static Stack ExceptionStack;
+  [ThreadStatic] public static Stack<Exception> ExceptionStack;
 
   #region HasYield
   protected class HasYield : IWalker
@@ -3311,9 +3325,9 @@ public class SetNode : SetNodeBase
   }
 
   public override MutatedName[] GetMutatedNames()
-  { using(CachedArray names = CachedArray.Alloc())
+  { using(CachedList<MutatedName> names = CachedList<MutatedName>.Alloc())
     { foreach(Node n in LHS) GetMutatedNames(names, n);
-      return (MutatedName[])names.ToArray(typeof(MutatedName));
+      return names.ToArray();
     }
   }
 
@@ -3390,7 +3404,7 @@ public class SetNode : SetNodeBase
     else throw UnhandledNodeType(lhs);
   }
 
-  protected virtual void GetMutatedNames(IList names, Node lhs)
+  protected virtual void GetMutatedNames(IList<MutatedName> names, Node lhs)
   { if(lhs is VariableNode) names.Add(new MutatedName(((VariableNode)lhs).Name, RHS));
     else if(!(lhs is GetSlotBase)) throw UnhandledNodeType(lhs);
   }

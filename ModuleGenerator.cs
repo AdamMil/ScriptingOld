@@ -20,7 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 using System;
-using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -319,7 +319,7 @@ public sealed class ModuleGenerator
   #endregion
 
   #region CodeAttrComparer
-  sealed class CodeAttrComparer : IComparer
+  sealed class CodeAttrComparer : System.Collections.IComparer
   { CodeAttrComparer() { }
 
     public int Compare(object a, object b)

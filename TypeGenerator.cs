@@ -20,8 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 using System;
-using System.Collections;
-using System.Collections.Specialized;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 
@@ -138,7 +137,7 @@ public sealed class TypeGenerator
 
   public TypeGenerator DefineNestedType(string name, Type parent) { return DefineNestedType(0, name, parent); }
   public TypeGenerator DefineNestedType(TypeAttributes attrs, string name, Type parent)
-  { if(nestedTypes==null) nestedTypes = CachedArray.Alloc();
+  { if(nestedTypes==null) nestedTypes = CachedList<TypeGenerator>.Alloc();
     TypeAttributes ta = attrs | TypeAttributes.Class | TypeAttributes.NestedPublic;
     TypeGenerator ret = new TypeGenerator(Assembly, TypeBuilder.DefineNestedType(name, ta, parent));
     nestedTypes.Add(ret);
@@ -269,16 +268,17 @@ public sealed class TypeGenerator
     { foreach(TypeGenerator tg in nestedTypes) tg.FinishType();
       nestedTypes.Dispose();
     }
-    if(constobjs!=null) constobjs.Dispose();
-    if(constslots!=null) constslots.Dispose();
-    nestedTypes = constobjs = constslots = null;
+    if(constObjs!=null) constObjs.Dispose();
+    if(constSlots!=null) constSlots.Dispose();
+    nestedTypes = null;
+    constObjs   = null;
+    constSlots  = null;
 
     return ret;
   }
 
   public bool GetNamedConstant(string name, Type type, out Slot slot)
-  { slot = (Slot)namedConstants[name];
-    if(slot==null)
+  { if(!namedConstants.TryGetValue(name, out slot))
     { slot = new StaticSlot(TypeBuilder.DefineField("c$"+numConstants++, type, FieldAttributes.Static));
       return false;
     }
@@ -291,15 +291,15 @@ public sealed class TypeGenerator
     bool hash = Convert.GetTypeCode(value)!=TypeCode.Object || value is Binding || value is MultipleValues ||
                 Options.Current.Language.IsHashableConstant(value);
 
-    if(hash) slot = (Slot)constants[value];
+    if(hash) constants.TryGetValue(value, out slot);
     else
-    { if(constobjs==null) { constobjs = CachedArray.Alloc(); constslots = CachedArray.Alloc(); }
+    { if(constObjs==null) { constObjs = CachedList<object>.Alloc(); constSlots = CachedList<Slot>.Alloc(); }
       else
       { int index=-1;
         if(value is string[])
         { string[] val = (string[])value;
-          for(int i=0; i<constobjs.Count; i++)
-          { string[] other = constobjs[i] as string[];
+          for(int i=0; i<constObjs.Count; i++)
+          { string[] other = constObjs[i] as string[];
             if(other!=null && val.Length==other.Length)
             { for(int j=0; j<val.Length; j++) if(val[j] != other[j]) goto nextSA;
               index = i;
@@ -310,8 +310,8 @@ public sealed class TypeGenerator
         }
         else if(value is object[])
         { object[] val = (object[])value;
-          for(int i=0; i<constobjs.Count; i++)
-          { object[] other = constobjs[i] as object[];
+          for(int i=0; i<constObjs.Count; i++)
+          { object[] other = constObjs[i] as object[];
             if(other!=null && val.Length==other.Length)
             { for(int j=0; j<val.Length; j++) if(val[j] != other[j]) goto nextSA;
               index = i;
@@ -320,9 +320,9 @@ public sealed class TypeGenerator
             nextSA:;
           }
         }
-        else index = constobjs.IndexOf(value);
+        else index = constObjs.IndexOf(value);
 
-        if(index!=-1) return (Slot)constslots[index];
+        if(index!=-1) return (Slot)constSlots[index];
       }
       slot = null;
     }
@@ -333,7 +333,7 @@ public sealed class TypeGenerator
       FieldBuilder fb = TypeBuilder.DefineField("c$"+numConstants++, type, FieldAttributes.Static);
       slot = new StaticSlot(fb);
       if(hash) constants[value] = slot;
-      else { constobjs.Add(value); constslots.Add(slot); }
+      else { constObjs.Add(value); constSlots.Add(slot); }
       EmitConstantInitializer(value);
       initGen.EmitFieldSet(fb);
     }
@@ -399,8 +399,11 @@ public sealed class TypeGenerator
     return paramTypes;
   }
 
-  HybridDictionary constants=new HybridDictionary(), namedConstants=new HybridDictionary();
-  CachedArray nestedTypes, constobjs, constslots;
+  Dictionary<object,Slot> constants = new Dictionary<object,Slot>();
+  Dictionary<string,Slot> namedConstants = new Dictionary<string,Slot>();
+  CachedList<TypeGenerator> nestedTypes;
+  CachedList<Slot> constSlots;
+  CachedList<object> constObjs;
   CodeGenerator initGen;
   int numConstants;
 }

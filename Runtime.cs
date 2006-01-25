@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Globalization;
 using System.Reflection;
@@ -76,61 +77,54 @@ public sealed class Binding
 public sealed class BindingSpace
 { public void Alter(string name, object value)
   { Binding bind;
-    lock(Dict) bind = (Binding)Dict[name];
-    if(bind==null) throw UndefinedVariableException.FromName(name);
+    lock(Dict) if(!Dict.TryGetValue(name, out bind)) throw UndefinedVariableException.FromName(name);
     bind.Value = value;
   }
 
   public void Bind(string name, object value, TopLevel env)
   { Binding bind;
     lock(Dict)
-    { bind = (Binding)Dict[name];
-      if(bind==null || bind.Environment!=env) Dict[name] = bind = new Binding(name, env);
-    }
+      if(!Dict.TryGetValue(name, out bind) || bind.Environment!=env) Dict[name] = bind = new Binding(name, env);
     bind.Value = value;
   }
 
   public bool Contains(string name)
   { Binding bind;
-    lock(Dict) bind = (Binding)Dict[name];
-    return bind!=null && bind.Value!=Binding.Unbound;
+    lock(Dict) return Dict.TryGetValue(name, out bind) && bind.Value!=Binding.Unbound;
   }
 
   public object Get(string name)
   { Binding bind;
-    lock(Dict) bind = (Binding)Dict[name];
-    if(bind==null || bind.Value==Binding.Unbound) throw UndefinedVariableException.FromName(name);
+    lock(Dict)
+      if(!Dict.TryGetValue(name, out bind) || bind.Value==Binding.Unbound)
+        throw UndefinedVariableException.FromName(name);
     return bind.Value;
   }
 
   public bool Get(string name, out object value)
   { Binding bind;
-    lock(Dict) bind = (Binding)Dict[name];
-    if(bind==null || bind.Value==Binding.Unbound) { value=null; return false; }
+    lock(Dict) if(!Dict.TryGetValue(name, out bind) || bind.Value==Binding.Unbound) { value=null; return false; }
     value = bind.Value;
     return true;
   }
 
   public Binding GetBinding(string name, TopLevel env)
   { Binding bind;
-    lock(Dict) bind = (Binding)Dict[name];
-    if(bind==null) Dict[name] = bind = new Binding(name, env);
+    lock(Dict) if(!Dict.TryGetValue(name, out bind)) Dict[name] = bind = new Binding(name, env);
     return bind;
   }
 
   public void Set(string name, object value, TopLevel env)
   { Binding bind;
     lock(Dict)
-    { bind = (Binding)Dict[name];
-      if(bind==null) Dict[name] = bind = new Binding(name, env);
-      else bind.Environment = env;
-    }
+      if(Dict.TryGetValue(name, out bind)) bind.Environment = env;
+      else Dict[name] = bind = new Binding(name, env);
     bind.Value = value;
   }
 
   public void Unbind(string name) { lock(Dict) Dict.Remove(name); }
 
-  public readonly Hashtable Dict = new Hashtable();
+  public readonly Dictionary<string,Binding> Dict = new Dictionary<string,Binding>();
 }
 #endregion
 
@@ -222,8 +216,8 @@ public abstract class MemberContainer
   }
   public abstract bool TryDeleteSlot(object instance, string name);
 
-  public ICollection GetMemberNames() { return GetMemberNames(false); }
-  public abstract ICollection GetMemberNames(bool includeImports);
+  public ICollection<string> GetMemberNames() { return GetMemberNames(false); }
+  public abstract ICollection<string> GetMemberNames(bool includeImports);
 
   public object GetSlot(object instance, string name)
   { object ret;
@@ -1169,8 +1163,8 @@ public sealed class Ops
   { return MemberContainer.FromObject(obj).GetAccessor(obj, name, out proc);
   }
 
-  public static ICollection GetMemberNames(object obj) { return GetMemberNames(obj, false); }
-  public static ICollection GetMemberNames(object obj, bool includeImports)
+  public static ICollection<string> GetMemberNames(object obj) { return GetMemberNames(obj, false); }
+  public static ICollection<string> GetMemberNames(object obj, bool includeImports)
   { return MemberContainer.FromObject(obj).GetMemberNames(includeImports);
   }
 
@@ -1483,7 +1477,7 @@ public sealed class Cast : MemberContainer
   { return ReflectedType.GetSlot(instance, name, out ret);
   }
 
-  public override ICollection GetMemberNames(bool includeImports)
+  public override ICollection<string> GetMemberNames(bool includeImports)
   { return ReflectedType.GetMemberNames(includeImports);
   }
 
@@ -1527,14 +1521,12 @@ public class CodeModule : MemberContainer
   { return TopLevel.Globals.Get(name, out ret);
   }
 
-  public override ICollection GetMemberNames(bool includeImports)
+  public override ICollection<string> GetMemberNames(bool includeImports)
   { if(includeImports) return TopLevel.Globals.Dict.Keys;
 
-    ArrayList ret = new ArrayList(Math.Max(TopLevel.Globals.Dict.Count/2, 16));
-    foreach(DictionaryEntry de in TopLevel.Globals.Dict)
-    { Binding bind = (Binding)de.Value;
-      if(bind.Environment==TopLevel) ret.Add(de.Key);
-    }
+    List<string> ret = new List<string>();
+    foreach(KeyValuePair<string,Binding> de in TopLevel.Globals.Dict)
+      if(de.Value.Environment==TopLevel) ret.Add(de.Key);
     return ret;
   }
 
@@ -1573,13 +1565,8 @@ public class CodeModule : MemberContainer
 
   static void Import(BindingSpace to, BindingSpace from, TopLevel env)
   { Language lang = Ops.GetCurrentLanguage();
-    foreach(DictionaryEntry de in from.Dict)
-    { string key = (string)de.Key;
-      if(!lang.ExcludeFromImport(key))
-      { Binding bind = (Binding)de.Value;
-        if(bind.Environment==env) to.Bind(key, bind.Value, env);
-      }
-    }
+    foreach(KeyValuePair<string,Binding> de in from.Dict)
+      if(!lang.ExcludeFromImport(de.Key) && de.Value.Environment==env) to.Bind(de.Key, de.Value.Value, env);
   }
 }
 #endregion

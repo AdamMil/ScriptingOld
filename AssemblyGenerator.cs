@@ -49,13 +49,12 @@ public sealed class AssemblyGenerator
     Assembly = domain.DefineDynamicAssembly(an, AssemblyBuilderAccess.RunAndSave, dir, null, null, null, null, true);
 
     if(debug)
-    { /* .NET 2.0 ConstructorInfo ci =
+    { ConstructorInfo ci =
         typeof(DebuggableAttribute).GetConstructor(new Type[] { typeof(DebuggableAttribute.DebuggingModes) });
       CustomAttributeBuilder ab = new CustomAttributeBuilder(ci,  
         new object[] { DebuggableAttribute.DebuggingModes.DisableOptimizations |
-                       DebuggableAttribute.DebuggingModes.Default });*/
-      ConstructorInfo ci = typeof(DebuggableAttribute).GetConstructor(new Type[] { typeof(bool), typeof(bool) });
-      Assembly.SetCustomAttribute(new CustomAttributeBuilder(ci, new object[] { true, true }));
+                       DebuggableAttribute.DebuggingModes.Default });
+      Assembly.SetCustomAttribute(ab);
     }
 
     Module = Assembly.DefineDynamicModule(outFileName, outFileName, debug);
