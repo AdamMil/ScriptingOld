@@ -20,8 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 using System;
-using System.Collections;
-using System.Collections.Specialized;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -68,26 +67,26 @@ public sealed class Scripting
 
   public static string LanguagesPath { get { return Path.Combine(InstallationPath, "languages"); } }
 
-  public static bool IsRegistered(string extension) { return extensions.Contains(NormalizeExtension(extension)); }
+  public static bool IsRegistered(string extension) { return extensions.ContainsKey(NormalizeExtension(extension)); }
 
   public static Language LoadLanguage(string extension)
   { if(extension==null) throw new ArgumentNullException();
 
     extension = NormalizeExtension(extension);
     string path;
-    lock(extensions) path = (string)extensions[extension];
-    if(path==null) throw new ArgumentException("No language is registered to handle files of type "+extension);
+    lock(extensions)
+      if(!extensions.TryGetValue(extension, out path))
+        throw new ArgumentException("No language is registered to handle files of type "+extension);
 
     Language lang;
     lock(languages)
-    { lang = (Language)languages[path];
-      if(lang==null)
+      if(!languages.TryGetValue(path, out lang))
       { int index = path.IndexOf(' ');
         if(index==-1) throw new FormatException("Invalid language path "+path);
         string typeName=path.Substring(0, index), assPath=path.Substring(index+1);
 
         Assembly ass = string.Compare(assPath, 0, "GAC:", 0, 4, true)!=0
-                        ? Assembly.LoadFrom(assPath) : Assembly.LoadWithPartialName(assPath.Substring(4));
+                         ? Assembly.LoadFrom(assPath) : Assembly.LoadWithPartialName(assPath.Substring(4));
         if(ass==null) throw new TypeLoadException("Unable to load language: "+path);
         Type type = ass.GetType(typeName, true);
         FieldInfo fi = type.GetField("Instance", BindingFlags.Static|BindingFlags.Public);
@@ -95,7 +94,6 @@ public sealed class Scripting
         if(lang==null) throw new TypeLoadException("Unable to load language: "+path);
         languages[path] = lang;
       }
-    }
 
     return lang;
   }
@@ -109,8 +107,8 @@ public sealed class Scripting
 
     if(language!=null)
       lock(languages)
-      { Language lang = (Language)languages[assemblyPath];
-        if(lang!=null && lang!=language)
+      { Language lang;
+        if(languages.TryGetValue(assemblyPath, out lang) && lang!=language)
           throw new InvalidOperationException("Assembly '"+assemblyPath+"' is already registered to language "+lang.Name);
         languages[assemblyPath] = language;
       }
@@ -125,7 +123,8 @@ public sealed class Scripting
     return ext.Trim().ToLower();
   }
 
-  static readonly ListDictionary extensions=new ListDictionary(), languages=new ListDictionary();
+  static readonly SortedList<string,string> extensions = new SortedList<string,string>();
+  static readonly SortedList<string,Language> languages = new SortedList<string,Language>();
 }
 #endregion
 
@@ -187,7 +186,7 @@ public abstract class TextFrontend
 
     string filename=null, outfile=null;
     PEFileKinds exeType = PEFileKinds.ConsoleApplication;
-    ArrayList errors = new ArrayList();
+    List<string> errors = new List<string>();
 
     for(int i=0; i<args.Length; i++)
     { string arg = args[i];

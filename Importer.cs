@@ -20,8 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 using System;
-using System.Collections;
-using System.Collections.Specialized;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using Scripting.Backend;
@@ -33,14 +32,14 @@ public sealed class Importer
 { Importer() { }
   static Importer() { SearchPaths.Add("."); }
 
-  public static void Import(TopLevel top, IDictionary dict, TopLevel env,
+  public static void Import(TopLevel top, Dictionary<string,object> dict, TopLevel env,
                             string[] names, string[] asNames, string myName)
   { if(names==null)
-      foreach(DictionaryEntry de in dict) top.Globals.Bind((string)de.Key, de.Value, env);
+      foreach(KeyValuePair<string,object> de in dict) top.Globals.Bind(de.Key, de.Value, env);
     else
       for(int i=0; i<names.Length; i++)
-      { object obj = dict[names[i]];
-        if(obj==null && !dict.Contains(names[i]))
+      { object obj;
+        if(!dict.TryGetValue(names[i], out obj))
           throw new ArgumentException(myName+" does not contain a member called '"+names[i]+"'");
         top.Globals.Bind(asNames[i], obj, env);
       }
@@ -55,8 +54,7 @@ public sealed class Importer
     string[] bits = name.Split('.');
 
     lock(LoadedModules)
-    { top = (MemberContainer)LoadedModules[bits[0]];
-      if(top==null)
+    { if(!LoadedModules.TryGetValue(bits[0], out top))
       { top = LoadFromPath(bits[0]);
         if(top==null) top = LoadBuiltin(bits[0]);
         if(top==null)
@@ -84,33 +82,31 @@ public sealed class Importer
   }
 
   public static MemberContainer Load(Type type)
-  { MemberContainer module = (MemberContainer)builtinTypes[type];
-    if(module==null) builtinTypes[type] = module = ModuleGenerator.Generate(type);
+  { MemberContainer module;
+    if(!builtinTypes.TryGetValue(type, out module)) builtinTypes[type] = module = ModuleGenerator.Generate(type);
     return module;
   }
 
-  public static readonly ArrayList SearchPaths = new ArrayList();
-  public static readonly Hashtable LoadedModules = new Hashtable();
+  public static readonly List<string> SearchPaths = new List<string>();
+  public static readonly Dictionary<string,MemberContainer> LoadedModules = new Dictionary<string,MemberContainer>();
 
   static MemberContainer LoadBuiltin(string name)
   { string ns = Ops.GetCurrentLanguage().BuiltinsNamespace;
     if(ns==null) return null;
 
-    IDictionary dict;
+    SortedList<string,Type> dict;
     lock(builtinNamespaces)
-    { dict = (IDictionary)builtinNamespaces[ns];
-      if(dict==null)
-      { builtinNamespaces[ns] = dict = new SortedList(4);
+      if(!builtinNamespaces.TryGetValue(ns, out dict))
+      { builtinNamespaces[ns] = dict = new SortedList<string,Type>(4);
         foreach(Type type in Ops.GetCurrentLanguage().GetType().Assembly.GetTypes())
           if(type.IsPublic && type.Namespace==ns)
           { object[] attrs = type.GetCustomAttributes(typeof(ScriptNameAttribute), false);
             if(attrs.Length!=0) dict[((ScriptNameAttribute)attrs[0]).Name] = type;
           }
       }
-    }
 
-    { Type type = (Type)dict[name];
-      if(type==null)
+    { Type type;
+      if(!dict.TryGetValue(name, out type))
       { name = ns+"."+name;
         type = Ops.GetCurrentLanguage().GetType().Assembly.GetType(name);
         if(type==null) type = Type.GetType(name);
@@ -134,9 +130,9 @@ public sealed class Importer
     }
     return null;
   }
-  
-  static readonly Hashtable builtinTypes = new Hashtable();
-  static readonly ListDictionary builtinNamespaces = new ListDictionary();
+
+  static readonly Dictionary<Type,MemberContainer> builtinTypes = new Dictionary<Type,MemberContainer>();
+  static readonly SortedList<string,SortedList<string,Type>> builtinNamespaces = new SortedList<string,SortedList<string,Type>>();
 }
 
 } // namespace Scripting

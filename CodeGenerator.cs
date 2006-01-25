@@ -20,7 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 using System;
-using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 
@@ -36,18 +36,15 @@ public class CodeGenerator
 
   public Slot AllocLocalTemp(Type type) { return AllocLocalTemp(type, false); }
   public Slot AllocLocalTemp(Type type, bool keepAround)
-  { CachedArray array = keepAround && IsGenerator ? nsTemps : localTemps;
+  { CachedList<Slot> array = keepAround && IsGenerator ? nsTemps : localTemps;
 
     if(array!=null)
-    { Slot slot;
       for(int i=0; i<array.Count; i++)
-      { slot = (Slot)array[i];
-        if(slot.Type==type)
-        { array.RemoveAt(i);
+        if(array[i].Type==type)
+        { Slot slot = array[i];
+          array.RemoveAt(i);
           return slot;
         }
-      }
-    }
 
     return keepAround && IsGenerator ? Namespace.AllocTemp(type) : new LocalSlot(ILG.DeclareLocal(type));
   }
@@ -520,11 +517,11 @@ public class CodeGenerator
   public void FreeLocalTemp(Slot slot)
   { if(slot==null) throw new ArgumentException("Attempted to free a null temp slot.");
     if(slot is LocalSlot)
-    { if(localTemps==null) localTemps = CachedArray.Alloc();
+    { if(localTemps==null) localTemps = CachedList<Slot>.Alloc();
       localTemps.Add(slot);
     }
     else
-    { if(nsTemps==null) nsTemps = CachedArray.Alloc();
+    { if(nsTemps==null) nsTemps = CachedList<Slot>.Alloc();
       nsTemps.Add(slot);
     }
   }
@@ -645,7 +642,7 @@ public class CodeGenerator
     throw new NotSupportedException(type.FullName);
   }
 
-  CachedArray localTemps, nsTemps;
+  CachedList<Slot> localTemps, nsTemps;
 }
 
 } // namespace Scripting.Backend

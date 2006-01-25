@@ -20,8 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 using System;
-using System.Collections;
-using System.Collections.Specialized;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -41,8 +40,8 @@ public abstract class Namespace
   }
 
   public void DeleteSlot(Name name)
-  { Slot slot = (Slot)slots[name];
-    if(slot==null)
+  { Slot slot;
+    if(!slots.TryGetValue(name, out slot))
     { if(Parent!=null) Parent.DeleteSlot(name);
       else EmitDelete(name, null);
     }
@@ -56,8 +55,8 @@ public abstract class Namespace
   public Slot GetSlot(Name name) { return GetSlot(name, true); }
   public Slot GetSlot(Name name, bool makeIt)
   { if(name.Depth==Name.Global && Parent!=null) return Parent.GetSlot(name, true);
-    Slot ret = (Slot)slots[name];
-    if(ret==null)
+    Slot ret;
+    if(!slots.TryGetValue(name, out ret))
     { if(Parent!=null) ret = Parent.GetSlot(name, false);
       // TODO: develop a way to communicate to this method whether or not this variable needs to be kept around
       if(ret==null && makeIt) slots[name] = ret = MakeSlot(name);
@@ -66,8 +65,7 @@ public abstract class Namespace
   }
 
   public void RemoveSlot(Name name)
-  { Slot slot = (Slot)slots[name];
-    if(slot==null) throw new ArgumentException("Slot "+name.String+" does not exist");
+  { Slot slot = slots[name]; // implicit Contains() check
     if(name.Depth==Name.Local) codeGen.FreeLocalTemp(slot);
     slots.Remove(name);
   }
@@ -87,7 +85,7 @@ public abstract class Namespace
     throw new NotImplementedException("unhandled name depth");
   }
 
-  protected HybridDictionary slots = new HybridDictionary();
+  protected Dictionary<Name,Slot> slots = new Dictionary<Name,Slot>();
   protected CodeGenerator codeGen;
 }
 #endregion

@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Reflection;
@@ -261,16 +262,16 @@ public sealed class Interop
   }
 
   static void LoadAssembly(Assembly ass)
-  { Hashtable namespaces = new Hashtable();
+  { Dictionary<string,List<Type>> namespaces = new Dictionary<string,List<Type>>();
     foreach(Type type in ass.GetTypes())
     { if(!type.IsPublic || type.DeclaringType!=null || type.Namespace==null) continue;
-      ArrayList list = (ArrayList)namespaces[type.Namespace];
-      if(list==null) namespaces[type.Namespace] = list = new ArrayList();
+      List<Type> list;
+      if(!namespaces.TryGetValue(type.Namespace, out list)) namespaces[type.Namespace] = list = new List<Type>();
       list.Add(type);
     }
-    foreach(DictionaryEntry de in namespaces)
-    { ReflectedNamespace ns = ReflectedNamespace.FromName((string)de.Key);
-      foreach(Type type in (ArrayList)de.Value) ns.AddType(type);
+    foreach(KeyValuePair<string,List<Type>> de in namespaces)
+    { ReflectedNamespace ns = ReflectedNamespace.FromName(de.Key);
+      foreach(Type type in de.Value) ns.AddType(type);
     }
   }
 
@@ -288,15 +289,14 @@ public sealed class Interop
     if(dc!=null && dc.Delegate.GetType()==delegateType) return dc.Delegate;
 
     CreateDelegate cr;
-    lock(handlers) cr = (CreateDelegate)handlers[delegateType];
+    lock(handlers) handlers.TryGetValue(delegateType, out cr);
 
     if(cr==null)
     { MethodInfo mi = delegateType.GetMethod("Invoke", BindingFlags.Public|BindingFlags.Instance);
       Signature sig = new Signature(mi, true);
 
       lock(dsigs)
-      { cr = (CreateDelegate)dsigs[sig];
-        if(cr==null)
+      { if(!dsigs.TryGetValue(sig, out cr))
         { for(int i=0; i<sig.Params.Length; i++)
             if(sig.Params[i].IsByRef) throw new NotImplementedException(); // TODO: implement this
           TypeGenerator tg = SnippetMaker.Assembly.DefineType(TypeAttributes.Public|TypeAttributes.Sealed,
@@ -350,14 +350,12 @@ public sealed class Interop
   { Type type = del.GetType();
     CreateProcedure cr;
     lock(dcallers)
-    { cr = (CreateProcedure)dcallers[type];
-      if(cr==null)
+      if(!dcallers.TryGetValue(type, out cr))
       { MethodInfo mi = type.GetMethod("Invoke");
         Type wrapper = ImplementSignatureWrapper(new Signature(mi, true), mi, "dc$"+dci.Next, type, false);
         dcallers[type] = cr =
           (CreateProcedure)Delegate.CreateDelegate(typeof(CreateProcedure), wrapper.GetMethod("Create"));
       }
-    }
     return cr(del);
   }
 
@@ -821,7 +819,9 @@ public sealed class Interop
   }
   #endregion
 
-  static readonly Hashtable handlers=new Hashtable(), dsigs=new Hashtable(), dcallers=new Hashtable();
+  static readonly Dictionary<Type,CreateDelegate> handlers = new Dictionary<Type,CreateDelegate>();
+  static readonly Dictionary<Signature,CreateDelegate> dsigs = new Dictionary<Signature,CreateDelegate>();
+  static readonly Dictionary<Type,CreateProcedure> dcallers = new Dictionary<Type,CreateProcedure>();
   static readonly Index dwi=new Index(), dci=new Index();
   static bool loadedStandard;
 }
@@ -1035,7 +1035,7 @@ public sealed class ReflectedFunctions : SimpleProcedure, IProperty
 
 #region ReflectedNamespace
 public sealed class ReflectedNamespace : MemberContainer
-{ ReflectedNamespace(string name) { this.name=name; dict=new Hashtable(); }
+{ ReflectedNamespace(string name) { this.name=name; dict=new Dictionary<string,object>(); }
 
   public void AddType(Type type)
   { Debug.Assert(type!=null && type.Namespace==name);
@@ -1043,12 +1043,8 @@ public sealed class ReflectedNamespace : MemberContainer
     dict[attrs.Length==0 ? type.Name : ((ScriptNameAttribute)attrs[0]).Name] = ReflectedType.FromType(type);
   }
 
-  public override bool GetSlot(object instance, string name, out object ret)
-  { ret = dict[name];
-    return ret!=null;
-  }
-
-  public override ICollection GetMemberNames(bool includeImports) { return dict.Keys; }
+  public override bool GetSlot(object instance, string name, out object ret) { return dict.TryGetValue(name, out ret); }
+  public override ICollection<string> GetMemberNames(bool includeImports) { return dict.Keys; }
 
   public override void Import(TopLevel top, string[] names, string[] asNames)
   { Importer.Import(top, dict, null, names, asNames, "namespace '"+name+"'");
@@ -1068,20 +1064,15 @@ public sealed class ReflectedNamespace : MemberContainer
 
     ReflectedNamespace rns, top;
 
-    lock(cache)
-    { top = (ReflectedNamespace)cache[bits[0]];
-      if(top==null)
-      { top = new ReflectedNamespace(bits[0]);
-        cache[bits[0]] = top;
-      }
-    }
+    lock(nscache) if(!nscache.TryGetValue(bits[0], out top)) nscache[bits[0]] = top = new ReflectedNamespace(bits[0]);
 
     rns = top;
 
     string ns = bits[0];
     for(int i=1; i<bits.Length; i++)
     { ns = ns+"."+bits[i];
-      object member = rns.dict[bits[i]];
+      object member;
+      rns.dict.TryGetValue(bits[i], out member);
       ReflectedNamespace sub = member as ReflectedNamespace;
       if(sub==null)
       { if(member!=null) throw new ArgumentException("Attempted to load namespace "+string.Join(".", bits)+
@@ -1095,9 +1086,9 @@ public sealed class ReflectedNamespace : MemberContainer
   }
 
   string name;
-  Hashtable dict;
+  Dictionary<string,object> dict;
 
-  static SortedList cache = new SortedList();
+  static SortedList<string,ReflectedNamespace> nscache = new SortedList<string,ReflectedNamespace>();
 }
 #endregion
 
@@ -1164,7 +1155,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
   public int MaxArgs { get { return -1; } }
   public bool NeedsFreshArgs { get { return false; } }
 
-  public SortedList Dict
+  public Dictionary<string,object> Dict
   { get
     { if(dict==null) Initialize();
       return dict;
@@ -1182,10 +1173,10 @@ public sealed class ReflectedType : MemberContainer, IProcedure
   public override bool GetSlot(object instance, string name, out object ret)
   { if(dict==null) Initialize();
     ret = dict[name];
-    return ret!=null || dict.Contains(name);
+    return ret!=null || dict.ContainsKey(name);
   }
 
-  public override ICollection GetMemberNames(bool includeImports)
+  public override ICollection<string> GetMemberNames(bool includeImports)
   { if(dict==null) Initialize();
     return dict.Keys;
   }
@@ -1214,22 +1205,22 @@ public sealed class ReflectedType : MemberContainer, IProcedure
   public IProcedure Constructor;
 
   public static ReflectedType FromType(Type type)
-  { ReflectedType rt = (ReflectedType)types[type];
-    if(rt==null) types[type] = rt = new ReflectedType(type);
+  { ReflectedType rt;
+    lock(types) if(!types.TryGetValue(type, out rt)) types[type] = rt = new ReflectedType(type);
     return rt;
   }
 
   public static ReflectedType FromType(Type type, bool includeInherited)
-  { ReflectedType rt = (ReflectedType)types[type];
-    if(rt==null) types[type] = rt = new ReflectedType(type, includeInherited);
+  { ReflectedType rt;
+    lock(types) if(!types.TryGetValue(type, out rt)) types[type] = rt = new ReflectedType(type, includeInherited);
     return rt;
   }
 
   public static readonly ReflectedType NullType = new ReflectedType(null);
 
   sealed class Methods : IDisposable
-  { public Methods(Type type) { List=CachedArray.Alloc(); Type=type; }
-    public CachedArray List;
+  { public Methods(Type type) { List=CachedList<MethodInfo>.Alloc(); Type=type; }
+    public CachedList<MethodInfo> List;
     public Type Type;
 
     public void Dispose() { List.Dispose(); }
@@ -1237,10 +1228,10 @@ public sealed class ReflectedType : MemberContainer, IProcedure
 
   sealed class Properties : IDisposable
   { public Properties(Type type, int numParams)
-    { Gets=CachedArray.Alloc(); Sets=CachedArray.Alloc(); Type=type; NumParams=numParams;
+    { Gets=CachedList<MethodInfo>.Alloc(); Sets=CachedList<MethodInfo>.Alloc(); Type=type; NumParams=numParams;
     }
 
-    public readonly CachedArray Gets, Sets;
+    public readonly CachedList<MethodInfo> Gets, Sets;
     public Type Type;
     public readonly int NumParams;
     
@@ -1249,7 +1240,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
 
   #region Initialize
   void Initialize()
-  { Hashtable dict = new Hashtable();
+  { dict = new Dictionary<string,object>();
     if(Type==null) return;
 
     BindingFlags flags = BindingFlags.Public|BindingFlags.Instance|BindingFlags.Static;
@@ -1310,12 +1301,12 @@ public sealed class ReflectedType : MemberContainer, IProcedure
       if(ps.Type!=Type) dict[name] = FromType(ps.Type).Dict[name];
       else
       { IProcedure get = ps.Gets.Count==0 ? null
-                           : ps.Gets.Count==1 ? (IProcedure)MakeFunctionWrapper((MethodInfo)ps.Gets[0])
-                           : new ReflectedFunctions((MethodInfo[])ps.Gets.ToArray(typeof(MethodInfo)), "get_"+name);
+                           : ps.Gets.Count==1 ? (IProcedure)MakeFunctionWrapper(ps.Gets[0])
+                           : new ReflectedFunctions(ps.Gets.ToArray(), "get_"+name);
         IProcedure set = ps.Sets.Count==0 ? null
-                           : ps.Sets.Count==1 ? (IProcedure)MakeFunctionWrapper((MethodInfo)ps.Sets[0])
-                           : new ReflectedFunctions((MethodInfo[])ps.Sets.ToArray(typeof(MethodInfo)), "set_"+name);
-        bool isStatic = ((MethodInfo)(ps.Gets.Count==0 ? ps.Sets : ps.Gets)[0]).IsStatic;
+                           : ps.Sets.Count==1 ? (IProcedure)MakeFunctionWrapper(ps.Sets[0])
+                           : new ReflectedFunctions(ps.Sets.ToArray(), "set_"+name);
+        bool isStatic = (ps.Gets.Count==0 ? ps.Sets : ps.Gets)[0].IsStatic;
         dict[name] = new ReflectedProperty(get, set, name, ps.NumParams, isStatic);
       }
       ps.Dispose();
@@ -1332,10 +1323,11 @@ public sealed class ReflectedType : MemberContainer, IProcedure
         ov.List.Add(mi);
       }
     foreach(DictionaryEntry de in overloads)
-    { Methods ov = (Methods)de.Value;
-      dict[de.Key] = ov.Type!=Type    ? FromType(ov.Type).Dict[de.Key] :
-                     ov.List.Count==1 ? (IProcedure)MakeFunctionWrapper((MethodInfo)ov.List[0])
-                       : new ReflectedFunctions((MethodInfo[])ov.List.ToArray(typeof(MethodInfo)), (string)de.Key);
+    { string name = (string)de.Key;
+      Methods ov = (Methods)de.Value;
+      dict[name] = ov.Type!=Type    ? FromType(ov.Type).Dict[name] :
+                   ov.List.Count==1 ? (IProcedure)MakeFunctionWrapper(ov.List[0])
+                                    : new ReflectedFunctions(ov.List.ToArray(), name);
       ov.Dispose();
     }
 
@@ -1346,12 +1338,10 @@ public sealed class ReflectedType : MemberContainer, IProcedure
         dict[prim.Name] = prim;
       }
       else dict[GetMemberName(subtype)] = ReflectedType.FromType(subtype);
-
-    this.dict = new SortedList(dict);
   }
   #endregion
 
-  SortedList dict;
+  Dictionary<string,object> dict;
   bool includeInherited;
 
   internal static FunctionWrapper[] GetConstructors(Type type)
@@ -1469,28 +1459,28 @@ public sealed class ReflectedType : MemberContainer, IProcedure
   #region MakeSignatureWrapper
   static Type MakeSignatureWrapper(MethodBase mi)
   { Signature sig = new Signature(mi);
-    Type type = (Type)sigs[sig];
+    Type type;
+    lock(sigs)
+      if(!sigs.TryGetValue(sig, out type))
+      { bool isCons = mi is ConstructorInfo;
 
-    if(type==null)
-    { bool isCons = mi is ConstructorInfo;
-
-      string name = "sw$"+swi.Next.ToString();
-      #if DEBUG
-      for(int i=0; i<sig.Params.Length; i++)
-      { Type t = sig.Params[i];
-        string suf=null;
-        while(true)
-        { if(t.IsPointer) suf += "Ptr";
-          else if(t.IsArray) suf += "Arr";
-          else if(t.GetElementType()==null) break;
-          t = t.GetElementType();
+        string name = "sw$"+swi.Next.ToString();
+        #if DEBUG
+        for(int i=0; i<sig.Params.Length; i++)
+        { Type t = sig.Params[i];
+          string suf=null;
+          while(true)
+          { if(t.IsPointer) suf += "Ptr";
+            else if(t.IsArray) suf += "Arr";
+            else if(t.GetElementType()==null) break;
+            t = t.GetElementType();
+          }
+          name += "_"+t.Name+suf;
         }
-        name += "_"+t.Name+suf;
-      }
-      #endif
+        #endif
 
-      sigs[sig] = type = Interop.ImplementSignatureWrapper(sig, mi, name, isCons);
-    }
+        sigs[sig] = type = Interop.ImplementSignatureWrapper(sig, mi, name, isCons);
+      }
     return type;
   }
   #endregion
@@ -1511,7 +1501,8 @@ public sealed class ReflectedType : MemberContainer, IProcedure
   }
   #endregion
 
-  static readonly Hashtable types=new Hashtable(), sigs=new Hashtable();
+  static readonly Dictionary<Type,ReflectedType> types = new Dictionary<Type,ReflectedType>();
+  static readonly Dictionary<Signature,Type> sigs = new Dictionary<Signature,Type>();
   static readonly Index fwi=new Index(), swi=new Index(), sci=new Index();
 }
 #endregion
@@ -1561,7 +1552,7 @@ sealed class Signature
   }
 
   public override int GetHashCode()
-  { int hash=Return.GetHashCode();
+  { int hash = Return.GetHashCode();
     for(int i=0; i<Params.Length; i++) hash ^= Params[i].GetHashCode();
     return hash;
   }
@@ -1570,7 +1561,7 @@ sealed class Signature
   public Type[]   Params;
   public object[] Defaults;
   public CallingConventions Convention;
-  public IntPtr PointerHack;
+  public IntPtr PointerHack; // FIXNOW: check if this is still necessary in .NET 2.0
   public bool     IsCons, ParamArray;
 }
 #endregion
