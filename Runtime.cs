@@ -1018,6 +1018,25 @@ public sealed class Ops
     }
   }
 
+  public static string ToHex(byte[] data)
+  { if(data==null) throw new ArgumentNullException("data");
+
+    const string cvt = "0123456789ABCDEF";
+
+    char[] chars = new char[data.Length*2];
+    unsafe
+    { fixed(byte* src=data)
+      fixed(char* dest=chars, map=cvt)
+      { for(int i=0,j=0,len=data.Length; i<len; i++)
+        { byte b = src[i];
+          dest[j++] = map[b>>4];
+          dest[j++] = map[b&0xF];
+        }
+      }
+      return new string(chars);
+    }
+  }
+
   public static string TypeName(object o) { return TypeName(o==null ? null : o.GetType()); }
   public static string TypeName(ReflectedType type) { return TypeName(type.Type); }
   public static string TypeName(Type type) { return GetCurrentLanguage().TypeName(type); }
@@ -1739,7 +1758,7 @@ public sealed class Reference
 #region RG (stuff that can't be written in C#)
 public sealed class RG
 { static RG()
-  { string dllPath = System.IO.Path.Combine(Scripting.DllCache, "Scripting.LowLevel.dll");
+  { string dllPath = System.IO.Path.Combine(Scripting.SystemDllCache, "Scripting.LowLevel.dll");
     if(System.IO.File.Exists(dllPath)) 
       try
       { Assembly ass = Assembly.LoadFrom(dllPath);

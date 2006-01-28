@@ -46,7 +46,8 @@ public class CodeGenerator
           return slot;
         }
 
-    return keepAround && IsGenerator ? Namespace.AllocTemp(type) : new LocalSlot(ILG.DeclareLocal(type));
+    return keepAround && IsGenerator ? Namespace.AllocTemp(type)
+                                     : new LocalSlot(this, ILG.DeclareLocal(type), "V_"+localNameIndex++);
   }
 
   public Slot AllocObjectArray(Node[] exprs) { return EmitObjectArray(exprs, 0, exprs.Length, true); }
@@ -643,6 +644,7 @@ public class CodeGenerator
   }
 
   CachedList<Slot> localTemps, nsTemps;
+  int localNameIndex;
 }
 
 } // namespace Scripting.Backend

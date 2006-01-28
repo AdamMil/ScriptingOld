@@ -38,7 +38,7 @@ public sealed class Scripting
   { try 
     { // a cleaner design would be to simply load all the DLLs and enumerate/register their languages.
       // the problem is that loading a bunch of possibly-unneeded assemblies at startup is slow.
-      string langPath=Path.GetFullPath(LanguagesPath), path=Path.Combine(langPath, "config.txt");
+      string langPath=Path.GetFullPath(InstallationPath), path=Path.Combine(langPath, "languages.txt");
       if(File.Exists(path))
       { StreamReader sr = new StreamReader(path);
         Regex langre = new Regex(@"^\s*(?<!#)(\S+)\s+(\S+)\s+(.*)", RegexOptions.Singleline);
@@ -48,7 +48,8 @@ public sealed class Scripting
           Match m = langre.Match(line);
           if(m.Success)
           { string type=m.Groups[2].Value, fullPath=m.Groups[3].Value;
-            if(string.Compare(fullPath, 0, "GAC:", 0, 4, true)!=0) fullPath = Path.Combine(langPath, fullPath);
+            if(string.Compare(fullPath, 0, "file:", 0, 5, true)==0)
+              fullPath = "file:"+Path.Combine(langPath, fullPath.Substring(5));
             fullPath = type+" "+fullPath;
             foreach(string ext in m.Groups[1].Value.Split(';')) extensions[NormalizeExtension(ext)] = fullPath;
           }
@@ -59,13 +60,20 @@ public sealed class Scripting
     catch { }
   }
 
-  public static string DllCache { get { return Path.Combine(InstallationPath, "dllcache"); } }
-
   public static string InstallationPath
   { get { return Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location); }
   }
 
-  public static string LanguagesPath { get { return Path.Combine(InstallationPath, "languages"); } }
+  public static string SystemDllCache { get { return Path.Combine(InstallationPath, "dllcache"); } }
+
+  public static string UserDataPath
+  { get
+    { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                          "AdamMil/Scripting");
+    }
+  }
+
+  public static string UserDllCache { get { return Path.Combine(UserDataPath, "dllcache"); } }
 
   public static bool IsRegistered(string extension) { return extensions.ContainsKey(NormalizeExtension(extension)); }
 
@@ -85,8 +93,8 @@ public sealed class Scripting
         if(index==-1) throw new FormatException("Invalid language path "+path);
         string typeName=path.Substring(0, index), assPath=path.Substring(index+1);
 
-        Assembly ass = string.Compare(assPath, 0, "GAC:", 0, 4, true)!=0
-                         ? Assembly.LoadFrom(assPath) : Assembly.LoadWithPartialName(assPath.Substring(4));
+        Assembly ass = string.Compare(assPath, 0, "file:", 0, 5, true)==0
+                         ? Assembly.LoadFrom(assPath.Substring(5)) : Assembly.Load(assPath);
         if(ass==null) throw new TypeLoadException("Unable to load language: "+path);
         Type type = ass.GetType(typeName, true);
         FieldInfo fi = type.GetField("Instance", BindingFlags.Static|BindingFlags.Public);
@@ -146,8 +154,9 @@ public abstract class TextFrontend
 
     if(outfile!=null)
     { Output.WriteLine("Compiling...");
-      ModuleGenerator.Generate(basename, basename, outfile, AST.CreateCompiled(AST.Create(node)),
-                               exeType); // FIXME: if snippetmaker is used (eg, if eval is called), the snippets will be lost
+      // FIXME: if snippetmaker is used (eg, if eval is called), the snippets will be lost
+      ModuleGenerator.Generate(basename, outfile, AST.CreateCompiled(AST.Create(node)),
+                               exeType, stdin ? (DateTime?)null : File.GetLastWriteTimeUtc(filename));
       Output.WriteLine("Successfully wrote "+outfile);
     }
     else

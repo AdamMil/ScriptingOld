@@ -194,9 +194,9 @@ public sealed class TopLevelSlot : Slot
 #region LocalSlot
 public sealed class LocalSlot : Slot
 { public LocalSlot(LocalBuilder lb) { builder = lb; }
-  public LocalSlot(LocalBuilder lb, string name)
+  public LocalSlot(CodeGenerator cg, LocalBuilder lb, string name)
   { builder = lb; 
-    if(Options.Current.Debug) lb.SetLocalSymInfo(name);
+    if(cg.TypeGenerator.Assembly.IsDebug) lb.SetLocalSymInfo(name);
   }
 
   public override Type Type { get { return builder.LocalType; } }

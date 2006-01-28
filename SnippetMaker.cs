@@ -28,7 +28,7 @@ namespace Scripting
 {
 
 public abstract class Snippet
-{ public abstract object Run(LocalEnvironment env);
+{ public abstract object Run(LocalEnvironment ENV);
 }
 
 public sealed class SnippetMaker
