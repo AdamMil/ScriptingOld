@@ -89,10 +89,20 @@ public sealed class ModuleGenerator
     if(attrs.Length==0) return ReflectedType.FromType(type, false);
     Array.Sort(attrs, CodeAttrComparer.Instance);
 
-    string filename = Path.Combine(Scripting.UserDllCache, "type-"+type.FullName.Replace('+', '%')+".dll");
     // TODO: provide some versioning support (eg, add the assembly's full name to the filename somehow)
+    string dllName = "type-"+type.FullName.Replace('+', '%')+".dll", filename;
+    #if !DEBUG
+    filename = Path.Combine(Scripting.SystemDllCache, dllName);
     MemberContainer mc = LoadFromCache(filename);
     if(mc!=null) return mc;
+    #endif
+    filename = Scripting.UserDllCache;
+    if(!Directory.Exists(filename)) try { Directory.CreateDirectory(filename); } catch { }
+    filename = Path.Combine(filename, dllName);
+    #if !DEBUG
+    mc = LoadFromCache(filename);
+    if(mc!=null) return mc;
+    #endif
 
     AssemblyGenerator ag = new AssemblyGenerator(type.FullName, filename);
     TopLevel oldTL = TopLevel.Current;
@@ -326,8 +336,9 @@ public sealed class ModuleGenerator
       MethodInfo main = null;
       #region Main
       if(fileKind!=PEFileKinds.Dll)
-      { cg = tg.DefineStaticMethod("Main", typeof(void));
-        cg.EmitNew((ConstructorInfo)cg.MethodBase);
+      { ConstructorInfo cons = (ConstructorInfo)cg.MethodBase;
+        cg = tg.DefineStaticMethod("Main", typeof(void));
+        cg.EmitNew(cons);
         cg.ILG.Emit(OpCodes.Pop);
         cg.EmitReturn();
         cg.Finish();
@@ -348,7 +359,7 @@ public sealed class ModuleGenerator
 
       if(fileKind!=PEFileKinds.Dll)
       { ag.Assembly.SetEntryPoint(main, fileKind);
-        if(Options.Current.Debug) ag.Module.SetUserEntryPoint(run);
+        if(ag.IsDebug) ag.Module.SetUserEntryPoint(run);
       }
 
       ag.Save();
@@ -382,12 +393,13 @@ public sealed class ModuleGenerator
   }
   #endregion
 
+  #region TestLoader
   sealed class TestLoader : MarshalByRefObject
-  { public bool TryLoad(string scripting, string dllPath, DateTime? fileTime)
+  { public bool TryLoad(string dllPath, DateTime? fileTime)
     { try
-      { Assembly dep=Assembly.ReflectionOnlyLoad(scripting), ass=Assembly.ReflectionOnlyLoadFrom(dllPath);
-        Type mtype=dep.GetType("Scripting.MemberContainer"), type=ass.GetType("ScriptModule");
-        if(mtype!=null && type!=null && type.IsSubclassOf(mtype))
+      { Assembly ass = Assembly.LoadFrom(dllPath);
+        Type type = ass.GetType("ScriptModule");
+        if(type!=null && type.IsSubclassOf(typeof(MemberContainer)))
         { if(fileTime.HasValue)
           { FieldInfo fi = type.GetField("fileTime", BindingFlags.Static|BindingFlags.Public);
             if(fi==null || fi.FieldType!=typeof(long) || (long)fi.GetValue(null)!=fileTime.Value.ToFileTimeUtc())
@@ -400,24 +412,26 @@ public sealed class ModuleGenerator
       return false;
     }
   }
+  #endregion
 
   static MemberContainer LoadFromCache(string dllPath) { return LoadFromCache(dllPath, null); }
   static MemberContainer LoadFromCache(string dllPath, DateTime? fileTime)
-  { 
-    #if DEBUG
-    if(File.Exists(dllPath))
+  { if(File.Exists(dllPath))
     { AppDomain domain = AppDomain.CreateDomain("Scripting Loader Domain");
       try
-      { Assembly current = Assembly.GetExecutingAssembly();
-        if(((TestLoader)domain.CreateInstanceFromAndUnwrap(current.Location, typeof(TestLoader).FullName))
-             .TryLoad(current.FullName, dllPath, fileTime))
+      { if(((TestLoader)domain.CreateInstanceFromAndUnwrap(Assembly.GetExecutingAssembly().Location,
+                                                           typeof(TestLoader).FullName))
+             .TryLoad(dllPath, fileTime))
           return Assembly.LoadFrom(dllPath).GetType("ScriptModule").GetConstructor(Type.EmptyTypes)
                          .Invoke(null) as MemberContainer;
       }
+      #if DEBUG
+      catch(Exception e) { Console.WriteLine("LOAD: "+e.ToString()); }
+      #else
       catch { }
+      #endif
       finally { AppDomain.Unload(domain); }
     }
-    #endif
     return null;
   }
 

@@ -761,6 +761,7 @@ public abstract class Language
 
   public virtual MemberContainer Builtins { get { return null; } }
   public virtual string BuiltinsNamespace { get { return null; } }
+  public abstract string FileExtensions { get; }
   public abstract string Name { get; }
 
   #region Ops
@@ -1098,7 +1099,8 @@ public abstract class Language
 }
 
 public sealed class NullLanguage : Language
-{ public override string Name { get { return "Null Language"; } }
+{ public override string FileExtensions { get { throw new NotSupportedException("Null language has no files."); } }
+  public override string Name { get { return "Null Language"; } }
 
   public override string GenerateName(Node within, string baseName)
   { throw new NotSupportedException("Null language has no syntax");
@@ -3234,7 +3236,7 @@ public sealed class MarkSourceNode : DebugNode
 { public MarkSourceNode(string file, string code, Node body) { File=file; Code=code; Body=body; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(Options.Current.Debug && cg.TypeGenerator.Assembly.IsDebug)
+  { if(cg.TypeGenerator.Assembly.IsDebug)
       cg.TypeGenerator.Assembly.Symbols =
         cg.TypeGenerator.Assembly.Module.DefineDocument(File, Guid.Empty, Guid.Empty, Guid.Empty);
 
@@ -3885,58 +3887,6 @@ public sealed class VariableNode : Node
   public override Type GetNodeType() { return Name.Type; }
 
   public Name Name;
-}
-#endregion
-
-// TODO: this doesn't seem general enough to belong in the base runtime. move it to NetLisp?
-#region VectorNode
-public sealed class VectorNode : Node
-{ public VectorNode(Node[] items) { Items = items; }
-
-  public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(etype==typeof(void))
-    { if(!IsConstant)
-      { cg.MarkPosition(this);
-        cg.EmitVoids(Items);
-      }
-    }
-    else
-    { cg.MarkPosition(this);
-      if(IsConstant) cg.EmitConstantObject(Evaluate());
-      else
-      { cg.MarkPosition(this);
-        cg.EmitObjectArray(Items);
-      }
-      etype = typeof(object[]);
-    }
-    TailReturn(cg);
-  }
-
-  public override object Evaluate() { return MakeObjectArray(Items); }
-  public override Type GetNodeType() { return typeof(object[]); }
-
-  public override void MarkTail(bool tail)
-  { Tail = tail;
-    foreach(Node node in Items) node.MarkTail(false);
-  }
-
-  public override void Optimize()
-  { bool isconst = true;
-    foreach(Node node in Items) if(!node.IsConstant) { isconst=false; break; }
-    IsConstant = isconst;
-  }
-
-  public override void SetFlags()
-  { ClearsStack = HasExcept(Items);
-    Interrupts  = HasInterrupt(Items);
-  }
-
-  public override void Walk(IWalker w)
-  { if(w.Walk(this)) foreach(Node n in Items) n.Walk(w);
-    w.PostWalk(this);
-  }
-
-  public readonly Node[] Items;
 }
 #endregion
 
