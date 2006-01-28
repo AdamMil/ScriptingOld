@@ -23,8 +23,6 @@ using System;
 using System.Reflection;
 using System.Reflection.Emit;
 
-// FIXME: the comparison operators short-circuit when Emitted but not when Evaluated. decide which way is more desirable
-
 namespace Scripting.Backend
 {
 
@@ -284,9 +282,14 @@ public sealed class EqualOperator : ComparisonOperator
     }
   }
 
-  public override object Evaluate(string name, params object[] args)
+  public override object Evaluate(string name, params Node[] args)
   { CheckArity(name, args);
-    for(int i=1; i<args.Length; i++) if(!Ops.AreEqual(args[i-1], args[i])) return Ops.FALSE;
+    object last = args[0].Evaluate();
+    for(int i=1; i<args.Length; i++)
+    { object next = args[i].Evaluate();
+      if(!Ops.AreEqual(last, next)) return Ops.FALSE;
+      last = next;
+    }
     return Ops.TRUE;
   }
 }
@@ -312,9 +315,14 @@ public sealed class NotEqualOperator : ComparisonOperator
     }
   }
 
-  public override object Evaluate(string name, params object[] args)
+  public override object Evaluate(string name, params Node[] args)
   { CheckArity(name, args);
-    for(int i=1; i<args.Length; i++) if(Ops.AreEqual(args[i-1], args[i])) return Ops.FALSE;
+    object last = args[0].Evaluate();
+    for(int i=1; i<args.Length; i++)
+    { object next = args[i].Evaluate();
+      if(Ops.AreEqual(last, next)) return Ops.FALSE;
+      last = next;
+    }
     return Ops.TRUE;
   }
 }
@@ -333,9 +341,10 @@ public sealed class IdenticalOperator : ComparisonOperator
     }
   }
 
-  public override object Evaluate(string name, params object[] args)
+  public override object Evaluate(string name, params Node[] args)
   { CheckArity(name, args);
-    for(int i=1; i<args.Length; i++) if(args[i-1]!=args[i]) return Ops.FALSE;
+    object obj = args[0].Evaluate();
+    for(int i=1; i<args.Length; i++) if(args[i].Evaluate()!=obj) return Ops.FALSE;
     return Ops.TRUE;
   }
 }
@@ -360,7 +369,8 @@ public sealed class NotIdenticalOperator : ComparisonOperator
 
   public override object Evaluate(string name, params Node[] args)
   { CheckArity(name, args);
-    for(int i=1; i<args.Length; i++) if(args[i-1]==args[i]) return Ops.FALSE;
+    object obj = args[0].Evaluate();
+    for(int i=1; i<args.Length; i++) if(args[i].Evaluate()==obj) return Ops.FALSE;
     return Ops.TRUE;
   }
 }
@@ -383,9 +393,14 @@ public sealed class LessOperator : ComparisonOperator
     }
   }
 
-  public override object Evaluate(string name, object[] args)
+  public override object Evaluate(string name, params Node[] args)
   { CheckArity(name, args);
-    for(int i=1; i<args.Length; i++) if(Ops.Compare(args[i-1], args[i])>=0) return Ops.FALSE;
+    object last = args[0].Evaluate();
+    for(int i=1; i<args.Length; i++)
+    { object next = args[i].Evaluate();
+      if(Ops.Compare(last, next)>=0) return Ops.FALSE;
+      last = next;
+    }
     return Ops.TRUE;
   }
 }
@@ -412,9 +427,14 @@ public sealed class LessEqualOperator : ComparisonOperator
     }
   }
 
-  public override object Evaluate(string name, object[] args)
+  public override object Evaluate(string name, params Node[] args)
   { CheckArity(name, args);
-    for(int i=1; i<args.Length; i++) if(Ops.Compare(args[i-1], args[i])>0) return Ops.FALSE;
+    object last = args[0].Evaluate();
+    for(int i=1; i<args.Length; i++)
+    { object next = args[i].Evaluate();
+      if(Ops.Compare(last, next)>0) return Ops.FALSE;
+      last = next;
+    }
     return Ops.TRUE;
   }
 }
@@ -437,9 +457,14 @@ public sealed class MoreOperator : ComparisonOperator
     }
   }
 
-  public override object Evaluate(string name, object[] args)
+  public override object Evaluate(string name, params Node[] args)
   { CheckArity(name, args);
-    for(int i=1; i<args.Length; i++) if(Ops.Compare(args[i-1], args[i])<=0) return Ops.FALSE;
+    object last = args[0].Evaluate();
+    for(int i=1; i<args.Length; i++)
+    { object next = args[i].Evaluate();
+      if(Ops.Compare(last, next)<=0) return Ops.FALSE;
+      last = next;
+    }
     return Ops.TRUE;
   }
 }
@@ -466,9 +491,14 @@ public sealed class MoreEqualOperator : ComparisonOperator
     }
   }
 
-  public override object Evaluate(string name, object[] args)
+  public override object Evaluate(string name, params Node[] args)
   { CheckArity(name, args);
-    for(int i=1; i<args.Length; i++) if(Ops.Compare(args[i-1], args[i])<0) return Ops.FALSE;
+    object last = args[0].Evaluate();
+    for(int i=1; i<args.Length; i++)
+    { object next = args[i].Evaluate();
+      if(Ops.Compare(last, next)<0) return Ops.FALSE;
+      last = next;
+    }
     return Ops.TRUE;
   }
 }
@@ -632,7 +662,7 @@ public sealed class ModulusOperator : BinaryOperator
 
   public override void EmitOp(CodeGenerator cg) { cg.EmitCall(typeof(Ops), "Modulus"); }
 
-  public override object Evaluate(string name, params Node[] args)
+  public override object Evaluate(string name, params object[] args)
   { CheckArity(name, args);
     return Ops.Modulus(args[0], args[1]);
   }
@@ -700,7 +730,7 @@ public sealed class BitwiseOrOperator : BinaryOperator
 
   public override void EmitOp(CodeGenerator cg) { cg.EmitCall(typeof(Ops), "BitwiseOr"); }
 
-  public override object Evaluate(string name, params Node[] args)
+  public override object Evaluate(string name, params object[] args)
   { CheckArity(name, args);
     if(args.Length==1) return args[0];
     object ret = Ops.BitwiseOr(args[0], args[1]);

@@ -35,29 +35,10 @@ public sealed class Scripting
 { Scripting() { }
 
   static Scripting()
-  { try 
-    { // a cleaner design would be to simply load all the DLLs and enumerate/register their languages.
-      // the problem is that loading a bunch of possibly-unneeded assemblies at startup is slow.
-      string langPath=Path.GetFullPath(InstallationPath), path=Path.Combine(langPath, "languages.txt");
-      if(File.Exists(path))
-      { StreamReader sr = new StreamReader(path);
-        Regex langre = new Regex(@"^\s*(?<!#)(\S+)\s+(\S+)\s+(.*)", RegexOptions.Singleline);
-        while(true)
-        { string line = sr.ReadLine();
-          if(line==null) break;
-          Match m = langre.Match(line);
-          if(m.Success)
-          { string type=m.Groups[2].Value, fullPath=m.Groups[3].Value;
-            if(string.Compare(fullPath, 0, "file:", 0, 5, true)==0)
-              fullPath = "file:"+Path.Combine(langPath, fullPath.Substring(5));
-            fullPath = type+" "+fullPath;
-            foreach(string ext in m.Groups[1].Value.Split(';')) extensions[NormalizeExtension(ext)] = fullPath;
-          }
-        }
-        sr.Close();
-      }
-    }
-    catch { }
+  { // a cleaner design would be to simply load all the DLLs and enumerate/register their languages.
+    // the problem is that loading a bunch of possibly-unneeded assemblies at startup is slow.
+    LoadLanguages(InstallationPath);
+    LoadLanguages(UserDataPath);
   }
 
   public static string InstallationPath
@@ -110,8 +91,19 @@ public sealed class Scripting
   { RegisterLanguage(extensions, assemblyPath, null);
   }
 
+  public static void RegisterLanguage(string assemblyPath, Language language)
+  { RegisterLanguage(null, assemblyPath, language);
+  }
+
+  public static void RegisterLanguage(Language language) { RegisterLanguage(null, null, language); }
+
   public static void RegisterLanguage(string extensions, string assemblyPath, Language language)
-  { if(extensions==null || assemblyPath==null) throw new ArgumentNullException();
+  { if(language==null && (extensions==null || assemblyPath==null)) throw new ArgumentNullException();
+    if(extensions==null) extensions = language.FileExtensions;
+    if(assemblyPath==null)
+    { Type type = language.GetType();
+      assemblyPath = type.FullName+" "+type.Assembly.FullName;
+    }
 
     if(language!=null)
       lock(languages)
@@ -124,6 +116,30 @@ public sealed class Scripting
     lock(Scripting.extensions)
       foreach(string ext in extensions.Split(';')) // TODO: warn about overwriting extensions that are already registered
         Scripting.extensions[NormalizeExtension(ext)] = assemblyPath;
+  }
+
+  static void LoadLanguages(string configPath)
+  { try
+    { string configFile = Path.Combine(configPath, "languages.txt");
+      if(File.Exists(configFile))
+      { StreamReader sr = new StreamReader(configFile);
+        Regex langre = new Regex(@"^\s*(?<!#)(\S+)\s+(\S+)\s+(.*)", RegexOptions.Singleline);
+        while(true)
+        { string line = sr.ReadLine();
+          if(line==null) break;
+          Match m = langre.Match(line);
+          if(m.Success)
+          { string type=m.Groups[2].Value, fullPath=m.Groups[3].Value;
+            if(string.Compare(fullPath, 0, "file:", 0, 5, true)==0)
+              fullPath = "file:"+Path.Combine(configPath, fullPath.Substring(5));
+            fullPath = type+" "+fullPath;
+            foreach(string ext in m.Groups[1].Value.Split(';')) extensions[NormalizeExtension(ext)] = fullPath;
+          }
+        }
+        sr.Close();
+      }
+    }
+    catch { }
   }
 
   static string NormalizeExtension(string ext)

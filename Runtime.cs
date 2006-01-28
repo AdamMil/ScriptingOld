@@ -786,7 +786,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.LeftShift((long)v, b) : IntegerOps.LeftShift(new Integer(v), b);
       }
     }
-    return GetCurrentLanguage().RightShift(a, b);
+    return GetCurrentLanguage().LeftShift(a, b);
   }
 
   public static object Less(object a, object b) { return FromBool(Compare(a,b)<0); }
@@ -819,7 +819,7 @@ public sealed class Ops
         return v<=long.MaxValue ? LongOps.Modulus((long)v, b) : IntegerOps.Modulus(new Integer(v), b);
       }
     }
-    return GetCurrentLanguage().Add(a, b);
+    return GetCurrentLanguage().Modulus(a, b);
   }
 
   public static object More(object a, object b) { return FromBool(Compare(a,b)>0); }
@@ -1757,23 +1757,20 @@ public sealed class Reference
 
 #region RG (stuff that can't be written in C#)
 public sealed class RG
-{ static RG()
+{ 
+  #if !COMPILE_LOWLEVEL
+  static RG() { ClosureType = typeof(ClosureF); }
+  #else
+  static RG()
   { string dllPath = System.IO.Path.Combine(Scripting.SystemDllCache, "Scripting.LowLevel.dll");
-    if(System.IO.File.Exists(dllPath)) 
-      try
-      { Assembly ass = Assembly.LoadFrom(dllPath);
-        ClosureType = ass.GetType("Scripting.ClosureF", true);
-        return;
-      }
-      catch { }
 
     AssemblyGenerator ag = new AssemblyGenerator("Scripting.LowLevel", dllPath, false);
     TypeGenerator tg;
     CodeGenerator cg;
 
     #region Closure
-    { tg = ag.DefineType(TypeAttributes.Public|TypeAttributes.Sealed, "Scripting.ClosureF", typeof(Closure));
-      
+    { tg = ag.DefineType(TypeAttributes.Public|TypeAttributes.Sealed, "Scripting.Backend.ClosureF", typeof(Closure));
+
       // constructor 1
       cg = tg.DefineConstructor(new Type[] { typeof(Template), typeof(LocalEnvironment) });
       cg.EmitThis();
@@ -1881,6 +1878,7 @@ public sealed class RG
 
     try { ag.Save(); } catch { }
   }
+  #endif
 
   public static readonly Type ClosureType;
 }
@@ -1979,12 +1977,5 @@ public sealed class Template
   public readonly bool HasList, HasDict, ArgsClosed;
 }
 #endregion
-
-/*#region Void
-public sealed class Void
-{ Void() { }
-  public static readonly Void Value = new Void();
-}
-#endregion*/
 
 } // namespace Scripting.Backend

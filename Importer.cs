@@ -41,7 +41,7 @@ public sealed class Importer
       { object obj;
         if(!dict.TryGetValue(names[i], out obj))
           throw new ArgumentException(myName+" does not contain a member called '"+names[i]+"'");
-        top.Globals.Bind(asNames[i], obj, env);
+        top.Globals.Set(asNames[i], obj, env);
       }
   }
 
