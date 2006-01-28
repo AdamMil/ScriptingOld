@@ -239,7 +239,6 @@ public sealed class NamedFrameSlot : Slot
   public override void EmitSet(CodeGenerator cg, Slot value)
   { SetupBinding(cg);
     Binding.EmitGet(cg);
-    if(Options.Current.Debug) cg.EmitCall(typeof(Ops), "CheckBinding");
     value.EmitGet(cg);
     cg.EmitFieldSet(typeof(Binding), "Value");
   }

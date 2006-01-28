@@ -3415,17 +3415,15 @@ public class SetNode : SetNodeBase
   protected virtual void EmitSet(CodeGenerator cg, Node lhs, Type onStack)
   { if(lhs is VariableNode)
     { VariableNode vn = (VariableNode)lhs;
-      if(Type==SetType.Alter || vn.Name.Depth!=Name.Global)
-      { cg.EmitConvertTo(vn.GetNodeType(), onStack);
-        cg.EmitSet(vn.Name);
-      }
+      cg.EmitConvertTo(vn.GetNodeType(), onStack);
+      if(Type!=SetType.Bind || vn.Name.Depth!=Name.Global) cg.EmitSet(vn.Name);
       else
-      { Slot tmp = cg.AllocLocalTemp(typeof(object));
+      { Slot tmp = cg.AllocLocalTemp(typeof(object)); // assumes vn.GetNodeType()==typeof(object)
         tmp.EmitSet(cg);
         cg.EmitTopLevel();
         cg.EmitString(vn.Name.String);
         tmp.EmitGet(cg);
-        cg.EmitCall(typeof(TopLevel), Type==SetType.Set ? "Set" : "Bind", typeof(string), typeof(object));
+        cg.EmitCall(typeof(TopLevel), "Bind", typeof(string), typeof(object));
         cg.FreeLocalTemp(tmp);
       }
     }

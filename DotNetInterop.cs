@@ -574,7 +574,7 @@ public sealed class Interop
     #endregion
 
     #region Call
-    cg = tg.DefineMethodOverride("Call", true, typeof(object[]));
+    cg = tg.DefineMethodOverride("Call", typeof(object[]));
 
     if(checkArity!=null)
     { cg.EmitArgGet(0);
@@ -598,7 +598,7 @@ public sealed class Interop
         refs[refi++] = new Ref(i, tmp);
       }
       else if(sig.Params[i].IsPointer) Interop.EmitConvertTo(cg, typeof(IntPtr));
-      else Interop.EmitConvertTo(cg, sig.Params[i], i==0 && sig.PointerHack!=IntPtr.Zero);
+      else Interop.EmitConvertTo(cg, sig.Params[i], i==0 && sig.NeedsThis);
     }
 
     if(min<numnp) // default arguments
@@ -786,13 +786,16 @@ public sealed class Interop
       }
       else
       { // TODO: report this to microsoft and see if we can get a straight answer
-        if(sig.PointerHack!=IntPtr.Zero) cg.ILG.Emit(OpCodes.Ldftn, (MethodInfo)mi); // HACK: we hardcode the function pointer in this case because MethodHandle.GetFunctionPointer() doesn't return the correct value for instance calls on value types. i'm not sure if this is safe, but it seems to work.
+        if(sig.PointerHack!=IntPtr.Zero)
+        { // HACK: we can't use calli in this case because MethodHandle.GetFunctionPointer() doesn't return the correct value for instance calls on value types or instance calls that return structures.
+          if(!sig.Return.IsValueType && numrefs==0) cg.ILG.Emit(OpCodes.Tailcall);
+          cg.EmitCall((MethodInfo)mi);
+        }
         else
         { cg.EmitThis();
           cg.EmitFieldGet(typeof(FunctionWrapperI), "methodPtr");
+          cg.ILG.EmitCalli(OpCodes.Calli, sig.Convention, sig.Return, sig.Params, null);
         }
-        if(!sig.Return.IsValueType && numrefs==0) cg.ILG.Emit(OpCodes.Tailcall);
-        cg.ILG.EmitCalli(OpCodes.Calli, sig.Convention, sig.Return, sig.Params, null);
       }
 
       if(sig.Return==typeof(void)) cg.EmitNull();
@@ -1172,8 +1175,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
 
   public override bool GetSlot(object instance, string name, out object ret)
   { if(dict==null) Initialize();
-    ret = dict[name];
-    return ret!=null || dict.ContainsKey(name);
+    return dict.TryGetValue(name, out ret);
   }
 
   public override ICollection<string> GetMemberNames(bool includeImports)
@@ -1373,7 +1375,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
   static FieldWrapper MakeFieldWrapper(FieldInfo fi)
   { TypeGenerator tg = SnippetMaker.Assembly.DefineType(TypeAttributes.Public|TypeAttributes.Sealed,
                                                         "fw"+fwi.Next+"$"+fi.Name, typeof(FieldWrapper));
-    CodeGenerator cg = tg.DefineMethodOverride("Call", true);
+    CodeGenerator cg = tg.DefineMethodOverride("Call");
     Label set;
     bool readOnly = fi.IsInitOnly || fi.IsLiteral;
 
@@ -1489,7 +1491,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
   internal static StructCreator MakeStructCreator(Type type)
   { TypeGenerator tg = SnippetMaker.Assembly.DefineType(TypeAttributes.Public|TypeAttributes.Sealed,
                                                         "sc$"+sci.Next, typeof(StructCreator));
-    CodeGenerator cg = tg.DefineMethodOverride("Call", true);
+    CodeGenerator cg = tg.DefineMethodOverride("Call", typeof(object[]));
     Slot slot = cg.AllocLocalTemp(type);
     slot.EmitGetAddr(cg);
     cg.ILG.Emit(OpCodes.Initobj, type);
@@ -1513,8 +1515,9 @@ sealed class Signature
   public Signature(MethodBase mi, bool ignoreThis)
   { ParameterInfo[] pi = mi.GetParameters();
 
-    IsCons   = mi is ConstructorInfo;
-    int so   = IsCons || mi.IsStatic || ignoreThis ? 0 : 1;
+    IsCons    = mi is ConstructorInfo;
+    NeedsThis = !IsCons && !mi.IsStatic && !ignoreThis;
+    int so    =  NeedsThis ? 1 : 0;
 
     Convention = mi.CallingConvention==CallingConventions.VarArgs ? CallingConventions.VarArgs
                                                                   : CallingConventions.Standard;
@@ -1522,10 +1525,13 @@ sealed class Signature
     Params     = new Type[pi.Length + so];
     ParamArray = pi.Length>0 && pi[pi.Length-1].IsDefined(typeof(ParamArrayAttribute), false);
 
-    if(so==1)
+    if(NeedsThis)
     { Params[0] = mi.DeclaringType;
-      PointerHack = mi.DeclaringType.IsValueType ? mi.MethodHandle.Value : IntPtr.Zero;
+      PointerHack = Params[0].IsValueType || Return.IsValueType && Return!=typeof(void) && !Return.IsPrimitive &&
+                                             !Return.IsEnum
+                      ? mi.MethodHandle.Value : IntPtr.Zero;
     }
+
     for(int i=0,req=-1; i<pi.Length; i++)
     { Params[i + so] = pi[i].ParameterType;
       if(pi[i].IsOptional)
@@ -1561,8 +1567,8 @@ sealed class Signature
   public Type[]   Params;
   public object[] Defaults;
   public CallingConventions Convention;
-  public IntPtr PointerHack; // FIXNOW: check if this is still necessary in .NET 2.0
-  public bool     IsCons, ParamArray;
+  public IntPtr PointerHack;
+  public bool     IsCons, NeedsThis, ParamArray;
 }
 #endregion
 
