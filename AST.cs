@@ -1069,10 +1069,10 @@ public abstract class Language
   public abstract Node Parse(string sourceName, System.IO.TextReader data);
 
   public Node ParseFile(string filename)
-  { System.IO.StreamReader sr = new System.IO.StreamReader(filename);
-    Node ret = Parse(System.IO.Path.GetFullPath(filename), sr);
-    sr.Close();
-    return ret;
+  { filename = System.IO.Path.GetFullPath(filename);
+    System.IO.StreamReader sr = new System.IO.StreamReader(filename);
+    try { return new MarkSourceNode(filename, null, Parse(filename, sr)); }
+    finally { sr.Close(); }
   }
 
   public virtual bool ShouldAddBuiltins(Type type) { return true; }
@@ -1247,9 +1247,12 @@ public sealed class AssertNode : WrapperNode
   }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(Options.Current.Debug) Node.Emit(cg, ref etype);
-    else if(Tail) { cg.EmitNull(); TailReturn(cg); }
-    else if(etype!=typeof(void)) { cg.EmitNull(); etype = typeof(object); }
+  { if(etype!=typeof(void) || Options.Current.Debug)
+    { cg.MarkPosition(this);
+      if(Options.Current.Debug) Node.Emit(cg, ref etype);
+      else if(etype!=typeof(void)) { cg.EmitNull(); etype = typeof(object); }
+    }
+    TailReturn(cg);
   }
 }
 #endregion
@@ -1419,7 +1422,8 @@ public class BreakNode : JumpNode
   public BreakNode(string name, Node returnValue) : base(name) { Return = returnValue; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(Return==null) base.Emit(cg, ref etype);
+  { cg.MarkPosition(this);
+    if(Return==null) base.Emit(cg, ref etype);
     else if(Tail)
     { Return.Emit(cg, ref etype);
       TailReturn(cg);
@@ -1768,13 +1772,13 @@ public sealed class CallNode : CallNodeBase
 
   #region Emit
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(IsConstant)
+  { cg.MarkPosition(this);
+
+    if(IsConstant)
     { EmitConstant(cg, Evaluate(), ref etype);
       TailReturn(cg);
       return;
     }
-
-    cg.MarkPosition(this);
 
     bool hasTryArg = HasTryArg();
     if(hasTryArg || NumNamed!=0 || NumLists!=0 || NumDicts!=0) goto normal;
@@ -1930,7 +1934,6 @@ public sealed class CallNode : CallNodeBase
 #region DebugNode
 public abstract class DebugNode : Node
 { public override Type GetNodeType() { return typeof(void); }
-  public override void Walk(IWalker w) { }
 }
 #endregion
 
@@ -2022,7 +2025,9 @@ public abstract class ExceptionNode : Node
   public Slot  ReturnSlot { get { return InTry==null ? returnSlot : InTry.ReturnSlot; } }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(!ClearsStack) // if we don't really need to clear the stack, don't.
+  { cg.MarkPosition(this);
+
+    if(!ClearsStack) // if we don't really need to clear the stack, don't.
     { if(!NeedElse) // either NeedElse is true or NeedFinally, but not both
       { if(NeedFinally) EmitFinally(cg);
         EmitConstant(cg, Body.Evaluate(), ref etype);
@@ -2335,7 +2340,8 @@ public sealed class GeneratorNode : Node
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(etype!=typeof(void))
-    { cg.EmitArgGet(0); // get local environment
+    { cg.MarkPosition(this);
+      cg.EmitArgGet(0); // get local environment
       cg.EmitNew(MakeGenerator(cg));
       etype = typeof(Generator);
     }
@@ -2407,7 +2413,8 @@ public sealed class GetAccessorNode : Node
 { public GetAccessorNode(Node obj, Node member) { Object=obj; Member=member; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
+  { cg.MarkPosition(this);
+    if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
     else
     { if(!Member.ClearsStack)
       { Object.Emit(cg);
@@ -2467,7 +2474,8 @@ public abstract class GetSlotBase : Node
   }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
+  { cg.MarkPosition(this);
+    if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
     else
     { if(!Member.ClearsStack)
       { Object.Emit(cg);
@@ -2566,7 +2574,8 @@ public abstract class SetSlotBase : Node
   }
   
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(!ClearsStack || !Member.ClearsStack)
+  { cg.MarkPosition(this);
+    if(!ClearsStack || !Member.ClearsStack)
     { cg.EmitNodes(Value, Object);
       Member.EmitString(cg);
     }
@@ -2640,7 +2649,8 @@ public sealed class CallPropertyNode : CallNodeBase
   }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { bool hasTryArg=HasTryArg(), keepAround=HasInterruptArg();
+  { cg.MarkPosition(this);
+    bool hasTryArg=HasTryArg(), keepAround=HasInterruptArg();
 
     Object.Emit(cg);
     Slot obj = cg.AllocLocalTemp(typeof(object), keepAround || Member.Interrupts);
@@ -2936,7 +2946,8 @@ public abstract class JumpNode : Node
 
   // note that IfNode makes assumptions about this
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { cg.ILG.Emit(NeedsLeave ? OpCodes.Leave : OpCodes.Br, Label);
+  { cg.MarkPosition(this);
+    cg.ILG.Emit(NeedsLeave ? OpCodes.Leave : OpCodes.Br, Label);
     etype = typeof(void);
   }
 
@@ -3069,6 +3080,12 @@ public sealed class LambdaNode : Node
     string name = "lambda$"+index.ToString();
     if(Name!=null) name += "_"+Name;
     icg = cg.TypeGenerator.DefineStaticMethod(name, typeof(object), typeof(LocalEnvironment), typeof(object[]));
+    
+    if(cg.TypeGenerator.Assembly.IsDebug)
+    { MethodBuilder mb = (MethodBuilder)icg.MethodBase;
+      mb.DefineParameter(1, ParameterAttributes.In, "ENV");
+      mb.DefineParameter(2, ParameterAttributes.In, "ARGS");
+    }
 
     icg.Namespace = new LocalNamespace(cg.Namespace, icg);
     if(CreatesLocalEnvironment)
@@ -3129,7 +3146,8 @@ public sealed class LambdaNode : Node
 public sealed class LiteralNode : Node
 { public LiteralNode(object value) { Value=value; }
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { EmitConstant(cg, Value, ref etype);
+  { cg.MarkPosition(this);
+    EmitConstant(cg, Value, ref etype);
     TailReturn(cg);
   }
   public override object Evaluate() { return Value; }
@@ -3211,18 +3229,6 @@ public sealed class LocalBindNode : Node
 }
 #endregion
 
-#region MarkerNode
-public abstract class MarkerNode : Node
-{ public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(etype!=typeof(void)) { cg.EmitNull(); etype=typeof(object); }
-    TailReturn(cg);
-  }
-
-  public override object Evaluate() { return null; }
-  public override Type GetNodeType() { return null; }
-}
-#endregion
-
 #region MarkSourceNode
 public sealed class MarkSourceNode : DebugNode
 { public MarkSourceNode(string file, string code, Node body) { File=file; Code=code; Body=body; }
@@ -3231,16 +3237,23 @@ public sealed class MarkSourceNode : DebugNode
   { if(Options.Current.Debug && cg.TypeGenerator.Assembly.IsDebug)
       cg.TypeGenerator.Assembly.Symbols =
         cg.TypeGenerator.Assembly.Module.DefineDocument(File, Guid.Empty, Guid.Empty, Guid.Empty);
-    // TODO: figure this out. cg.TypeGenerator.Assembly.Symbols.SetSource(System.Text.Encoding.UTF8.GetBytes(Code));
-    if(Body!=null) Body.Emit(cg, ref etype);
-    else if(etype!=typeof(void))
-    { cg.EmitNull();
-      etype = typeof(object);
+
+    // TODO: see if this can be figured out. if(Code!=null) cg.TypeGenerator.Assembly.Symbols.SetSource(System.Text.Encoding.UTF8.GetBytes(Code));
+
+    if(Body!=null || etype!=typeof(void))
+    { cg.MarkPosition(this);
+      if(Body!=null) Body.Emit(cg, ref etype);
+      else if(etype!=typeof(void))
+      { cg.EmitNull();
+        etype = typeof(object);
+      }
     }
+
+    if(Body==null) TailReturn(cg);
   }
 
   public override object Evaluate() { return Body==null ? null : Body.Evaluate(); }
-  public override Type GetNodeType() { return Body==null ? typeof(object) : Body.GetNodeType(); }
+  public override Type GetNodeType() { return Body==null ? typeof(void) : Body.GetNodeType(); }
   public override void MarkTail(bool tail) { Tail = tail; if(Body!=null) Body.MarkTail(tail); }
   public override void Walk(IWalker w)
   { if(w.Walk(this) && Body!=null) Body.Walk(w);
@@ -3252,12 +3265,26 @@ public sealed class MarkSourceNode : DebugNode
 }
 #endregion
 
+#region MarkerNode
+public abstract class MarkerNode : Node
+{ public override void Emit(CodeGenerator cg, ref Type etype)
+  { if(etype!=typeof(void)) { cg.EmitNull(); etype=typeof(object); }
+    TailReturn(cg);
+  }
+
+  public override object Evaluate() { return null; }
+  public override Type GetNodeType() { return typeof(void); }
+  public override void Optimize() { IsConstant = true; }
+}
+#endregion
+
 #region OpNode
 public sealed class OpNode : Node
 { public OpNode(Operator op, params Node[] nodes) { Operator=op; Nodes=nodes; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
+  { cg.MarkPosition(this);
+    if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
     else Operator.Emit(cg, ref etype, Nodes);
     TailReturn(cg);
   }
@@ -3432,7 +3459,8 @@ public sealed class SlotNode : Node
 { public SlotNode(Slot slot) { Slot=slot; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { Slot.EmitGet(cg);
+  { cg.MarkPosition(this);
+    Slot.EmitGet(cg);
 
     if(AreCompatible(Slot.Type, etype)) etype = Slot.Type;
     else if(!etype.IsValueType && Slot.Type.IsValueType)
@@ -3521,7 +3549,8 @@ public sealed class TypeNode : Node
 { public TypeNode(Type type) { Type=type; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { cg.EmitTypeOf(Type);
+  { cg.MarkPosition(this);
+    cg.EmitTypeOf(Type);
     if(etype==typeof(Type)) return;
     else if(etype==typeof(ReflectedType)) cg.EmitCall(typeof(ReflectedType), "FromType");
     else etype = typeof(ReflectedType);
@@ -3594,7 +3623,8 @@ public sealed class UnaryOpNode : Node
 { public UnaryOpNode(UnaryOperator op, Node value) { Operator=op; Value=value; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
+  { cg.MarkPosition(this);
+    if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
     else Operator.Emit(cg, ref etype, Value);
     TailReturn(cg);
   }
@@ -3629,7 +3659,8 @@ public sealed class ValueBindNode : Node
 { public ValueBindNode(Name[][] names, Node[] inits, Node body) { Names=names; Inits=inits; Body=body; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
+  { cg.MarkPosition(this);
+    if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
     else
     { cg.MarkPosition(this);
       for(int i=0; i<Names.Length; i++)
@@ -3774,13 +3805,22 @@ public sealed class ValuesNode : Node
 { public ValuesNode(params Node[] values) { Values = values; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(etype==typeof(void)) cg.EmitVoids(Values);
-    else
-    { cg.EmitObjectArray(Values);
-      cg.EmitNew(typeof(MultipleValues), typeof(object[]));
-      etype = typeof(MultipleValues);
-      TailReturn(cg);
+  { if(etype==typeof(void))
+    { if(!IsConstant)
+      { cg.MarkPosition(this);
+        cg.EmitVoids(Values);
+      }
     }
+    else
+    { cg.MarkPosition(this);
+      if(IsConstant) EmitConstant(cg, Evaluate(), ref etype);
+      else
+      { cg.EmitObjectArray(Values);
+        cg.EmitNew(typeof(MultipleValues), typeof(object[]));
+        etype = typeof(MultipleValues);
+      }
+    }
+    TailReturn(cg);
   }
 
   public override object Evaluate() { return new MultipleValues(MakeObjectArray(Values)); }
@@ -3815,7 +3855,8 @@ public sealed class VariableNode : Node
   public VariableNode(Name name) { Name = name; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(Options.Current.Debug && !Name.Type.IsValueType) // FIXME: add use-of-unassigned-variable check for value types
+  { cg.MarkPosition(this);
+    if(Options.Current.Debug && !Name.Type.IsValueType) // FIXME: add use-of-unassigned-variable check for value types
     { cg.EmitGet(Name);
       cg.Dup();
       cg.EmitString(Name.String);
@@ -3847,17 +3888,21 @@ public sealed class VariableNode : Node
 }
 #endregion
 
+// TODO: this doesn't seem general enough to belong in the base runtime. move it to NetLisp?
 #region VectorNode
 public sealed class VectorNode : Node
 { public VectorNode(Node[] items) { Items = items; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(etype==typeof(void))
-    { cg.MarkPosition(this);
-      cg.EmitVoids(Items);
+    { if(!IsConstant)
+      { cg.MarkPosition(this);
+        cg.EmitVoids(Items);
+      }
     }
     else
-    { if(IsConstant) cg.EmitConstantObject(Evaluate());
+    { cg.MarkPosition(this);
+      if(IsConstant) cg.EmitConstantObject(Evaluate());
       else
       { cg.MarkPosition(this);
         cg.EmitObjectArray(Items);
@@ -3900,7 +3945,11 @@ public class WrapperNode : Node
 { public WrapperNode() { }
   public WrapperNode(Node node) { Node = node; }
 
-  public override void Emit(CodeGenerator cg, ref Type etype) { Node.Emit(cg, ref etype); }
+  public override void Emit(CodeGenerator cg, ref Type etype)
+  { cg.MarkPosition(this);
+    Node.Emit(cg, ref etype);
+  }
+
   public override object Evaluate() { return Node.Evaluate(); }
   public override Type GetNodeType() { return Node.GetNodeType(); }
   public override void MarkTail(bool tail) { Node.MarkTail(tail); }
@@ -3932,6 +3981,7 @@ public sealed class YieldNode : Node
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { // this code assumes it's being emitted inside a Generator
+    cg.MarkPosition(this);
     cg.EmitThis();
     cg.EmitInt(unchecked((int)YieldNumber));
     cg.EmitFieldSet(typeof(Generator).GetField("jump", BindingFlags.Instance|BindingFlags.NonPublic));

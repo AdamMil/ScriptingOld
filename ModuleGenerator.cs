@@ -16,7 +16,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-13037, USA.
 */
 
 using System;
@@ -89,9 +89,9 @@ public sealed class ModuleGenerator
     if(attrs.Length==0) return ReflectedType.FromType(type, false);
     Array.Sort(attrs, CodeAttrComparer.Instance);
 
-    // TODO: come up with a better naming scheme (replacing '+' with '.' can create collisions)
-    string filename = Path.Combine(Scripting.DllCache, type.FullName.Replace('+', '.')+".dll");
-    MemberContainer mc = LoadFromCache(Scripting.DllCache);
+    string filename = Path.Combine(Scripting.UserDllCache, "type-"+type.FullName.Replace('+', '%')+".dll");
+    // TODO: provide some versioning support (eg, add the assembly's full name to the filename somehow)
+    MemberContainer mc = LoadFromCache(filename);
     if(mc!=null) return mc;
 
     AssemblyGenerator ag = new AssemblyGenerator(type.FullName, filename);
@@ -108,36 +108,30 @@ public sealed class ModuleGenerator
       if(addBuiltins) Options.Current.Language.Builtins.Import(TopLevel.Current); // TODO: affected by above FIXME
       ReflectedType.FromType(type, false).Import(TopLevel.Current);
 
-      TypeGenerator tg = ag.DefineType(CacheTypeName(), typeof(BuiltinModule));
+      TypeGenerator tg = ag.DefineType("ScriptModule", typeof(BuiltinModule));
       CodeGenerator cg;
 
       cg = tg.GetInitializer();
-      Slot staticTop = tg.DefineStaticField(FieldAttributes.Private, "topLevel", typeof(TopLevel));
+      Slot topSlot = tg.DefineStaticField(FieldAttributes.Private, "topLevel", typeof(TopLevel));
       Slot oldInitTop = cg.AllocLocalTemp(typeof(TopLevel));
 
       cg.EmitFieldGet(typeof(TopLevel), "Current");
       oldInitTop.EmitSet(cg);
       cg.ILG.BeginExceptionBlock();
       cg.EmitNew(typeof(TopLevel));
-      staticTop.EmitSet(cg);
+      topSlot.EmitSet(cg);
       if(addBuiltins)
       { cg.EmitLanguage(Options.Current.Language);
         cg.EmitPropGet(typeof(Language), "Builtins");
-        staticTop.EmitGet(cg);
+        topSlot.EmitGet(cg);
         cg.EmitCall(typeof(MemberContainer), "Import", typeof(TopLevel));
       }
-      staticTop.EmitGet(cg);
-      cg.EmitFieldSet(typeof(TopLevel), "Current");
-
-      cg = tg.DefineStaticMethod(MethodAttributes.Private, "Run", typeof(void),
-                                 new Type[] { typeof(LocalEnvironment), typeof(TopLevel) });
-      Slot oldRunTop = cg.AllocLocalTemp(typeof(TopLevel));
-      Slot topSlot = new ArgSlot((MethodBuilder)cg.MethodBase, 1, "topLevel", typeof(TopLevel));
-      cg.EmitFieldGet(typeof(TopLevel), "Current");
-      oldRunTop.EmitSet(cg);
-      cg.ILG.BeginExceptionBlock();
       topSlot.EmitGet(cg);
       cg.EmitFieldSet(typeof(TopLevel), "Current");
+
+      cg = tg.DefineStaticMethod(MethodAttributes.Private, "Run", typeof(void), typeof(LocalEnvironment));
+      MethodBuilder mb = (MethodBuilder)cg.MethodBase;
+      mb.DefineParameter(1, ParameterAttributes.In, "ENV");
 
       int closedVars = 0;
       LambdaNode[] nodes = new LambdaNode[attrs.Length];
@@ -163,27 +157,35 @@ public sealed class ModuleGenerator
         }
       }
       
-      cg.ILG.BeginFinallyBlock();
-      oldRunTop.EmitGet(cg);
-      cg.EmitFieldSet(typeof(TopLevel), "Current");
-      cg.ILG.EndExceptionBlock();
       cg.EmitReturn();
-      cg.FreeLocalTemp(oldRunTop);
       cg.Finish();
 
       MethodInfo run = (MethodInfo)cg.MethodBase;
 
+      #region Constructor
       cg = tg.DefineConstructor(Type.EmptyTypes);
       cg.EmitThis();
-      staticTop.EmitGet(cg);
+      topSlot.EmitGet(cg);
       cg.EmitTypeOf(type);
       cg.EmitCall(typeof(BuiltinModule).GetConstructor(new Type[] { typeof(TopLevel), typeof(Type) }));
+
+      Slot oldConsTop = cg.AllocLocalTemp(typeof(TopLevel));
+      cg.EmitFieldGet(typeof(TopLevel), "Current");
+      oldConsTop.EmitSet(cg);
+      cg.ILG.BeginExceptionBlock();
+      topSlot.EmitGet(cg);
+      cg.EmitFieldSet(typeof(TopLevel), "Current");
       cg.EmitNull();
-      cg.EmitThis();
-      cg.EmitFieldGet(typeof(CodeModule), "TopLevel");
       cg.EmitCall(run);
+      cg.ILG.BeginFinallyBlock();
+      oldConsTop.EmitGet(cg);
+      cg.FreeLocalTemp(oldConsTop);
+      cg.EmitFieldSet(typeof(TopLevel), "Current");
+      cg.ILG.EndExceptionBlock();
+
       cg.EmitReturn();
       cg.Finish();
+      #endregion
 
       cg = tg.GetInitializer();
       cg.ILG.BeginFinallyBlock();
@@ -204,26 +206,53 @@ public sealed class ModuleGenerator
   #region Generate from file
   public static MemberContainer Generate(string filename)
   { if(!File.Exists(filename)) return null;
-    filename = Path.GetFullPath(filename);
+    filename = Path.GetFullPath(filename).Trim();
 
-    string dllPath = Path.Combine(Path.GetDirectoryName(filename), Path.GetFileNameWithoutExtension(filename)+".dll");
     DateTime modTime = File.GetLastWriteTimeUtc(filename);
-    MemberContainer mc = LoadFromCache(dllPath, modTime);
+    MemberContainer mc = LoadFromCache(filename+".dll", modTime);
     if(mc!=null) return mc;
+
+    string dllPath = Scripting.UserDllCache;
+    try
+    { if(!Directory.Exists(dllPath)) Directory.CreateDirectory(dllPath);
+      // SHA1 has a slim chance of a collision, and i don't like it, but it's much lower than the chance of the path
+      // exceeding MAX_PATH if i do some kind of direct translation of the source filename
+      // TODO: perhaps we should cache more than the file name. ie, maybe we should also cache the content
+      // of the script file... but that slows things down.
+      byte[] hash = new System.Security.Cryptography.SHA1Managed()
+                          .ComputeHash(System.Text.Encoding.UTF8.GetBytes(filename));
+      dllPath = Path.Combine(dllPath, Path.GetFileName(filename)+"-"+Ops.ToHex(hash)+".dll");
+
+      mc = LoadFromCache(dllPath, modTime);
+      if(mc!=null) return mc;
+    }
+    catch { }
 
     Language oldLang = Options.Current.Language;
     try
     { Options.Current.Language = Scripting.LoadLanguage(Path.GetExtension(filename));
-      Type type = Generate(CacheTypeName(modTime), Path.GetFileNameWithoutExtension(filename), dllPath,
-                           AST.CreateCompiled(Options.Current.Language.ParseFile(filename)), PEFileKinds.Dll);
+      Type type = Generate("ScriptModule", Path.GetFileNameWithoutExtension(dllPath), dllPath,
+                           AST.CreateCompiled(Options.Current.Language.ParseFile(filename)), PEFileKinds.Dll, modTime);
       return (MemberContainer)type.GetConstructor(Type.EmptyTypes).Invoke(null);
     }
     finally { Options.Current.Language = oldLang; }
   }
   #endregion
 
-  #region Generate .DLL from node
-  public static Type Generate(string typeName, string moduleName, string filename, LambdaNode body, PEFileKinds fileKind)
+  #region Generate .DLL from LambdaNode
+  public static Type Generate(string typeName, string filename, LambdaNode body, PEFileKinds fileKind)
+  { return Generate(typeName, typeName, filename, body, fileKind, null);
+  }
+  public static Type Generate(string typeName, string filename, LambdaNode body, PEFileKinds fileKind,
+                              DateTime? fileTime)
+  { return Generate(typeName, typeName, filename, body, fileKind, fileTime);
+  }
+  public static Type Generate(string typeName, string moduleName, string filename, LambdaNode body, 
+                              PEFileKinds fileKind)
+  { return Generate(typeName, moduleName, filename, body, fileKind, null);
+  }
+  public static Type Generate(string typeName, string moduleName, string filename, LambdaNode body,
+                              PEFileKinds fileKind, DateTime? fileTime)
   { TopLevel oldTop = TopLevel.Current;
     try
     { TopLevel.Current = new TopLevel();
@@ -234,7 +263,13 @@ public sealed class ModuleGenerator
       TypeGenerator tg = ag.DefineType(TypeAttributes.Public|TypeAttributes.Sealed, typeName, typeof(CodeModule));
       Slot topSlot = tg.DefineStaticField(FieldAttributes.Private, "topLevel", typeof(TopLevel));
 
+      if(fileTime.HasValue)
+        tg.TypeBuilder.DefineField("fileTime", typeof(long), FieldAttributes.Literal|FieldAttributes.Public|FieldAttributes.Static)
+          .SetConstant(fileTime.Value.ToFileTimeUtc());
+
+      #region Initializer (start)
       CodeGenerator cg = tg.GetInitializer();
+
       cg.EmitFieldGet(typeof(TopLevel), "Current");
       Slot oldTopSlot = cg.AllocLocalTemp(typeof(TopLevel));
       oldTopSlot.EmitSet(cg);
@@ -251,9 +286,12 @@ public sealed class ModuleGenerator
         topSlot.EmitGet(cg);
         cg.EmitCall(typeof(MemberContainer), "Import", typeof(TopLevel));
       }
+      #endregion
 
       #region Run
       cg = tg.DefineStaticMethod(MethodAttributes.Private, "Run", typeof(object), typeof(LocalEnvironment));
+      MethodBuilder mb = (MethodBuilder)cg.MethodBase;
+      mb.DefineParameter(1, ParameterAttributes.In, "ENV");
       cg.SetupNamespace(body.ClosedVars);
       body.Body.Emit(cg);
       cg.Finish();
@@ -297,12 +335,14 @@ public sealed class ModuleGenerator
       }
       #endregion
 
+      #region Initializer (continued)
       cg = tg.GetInitializer();
       cg.ILG.BeginFinallyBlock();
       oldTopSlot.EmitGet(cg);
       cg.FreeLocalTemp(oldTopSlot);
       cg.EmitFieldSet(typeof(TopLevel), "Current");
       cg.ILG.EndExceptionBlock();
+      #endregion
 
       Type ret = tg.FinishType();
 
@@ -342,24 +382,41 @@ public sealed class ModuleGenerator
   }
   #endregion
 
-  static string CacheTypeName() { return "ScriptModule"; }
-  static string CacheTypeName(DateTime time) { return "ScriptModule_"+time.ToFileTimeUtc(); }
-
-  static MemberContainer LoadFromCache(string dllPath) { return LoadFromCache(dllPath, CacheTypeName()); }
-  static MemberContainer LoadFromCache(string dllPath, DateTime date)
-  { return LoadFromCache(dllPath, CacheTypeName(date));
-  }
-  static MemberContainer LoadFromCache(string dllPath, string typeName)
-  { 
-    #if !DEBUG
-    if(File.Exists(dllPath))
-      try
-      { Assembly ass = Assembly.LoadFrom(dllPath);
-        Type mtype = ass.GetType(typeName);
-        if(mtype!=null && mtype.IsSubclassOf(typeof(MemberContainer)))
-          return (MemberContainer)mtype.GetConstructor(Type.EmptyTypes).Invoke(null);
+  sealed class TestLoader : MarshalByRefObject
+  { public bool TryLoad(string scripting, string dllPath, DateTime? fileTime)
+    { try
+      { Assembly dep=Assembly.ReflectionOnlyLoad(scripting), ass=Assembly.ReflectionOnlyLoadFrom(dllPath);
+        Type mtype=dep.GetType("Scripting.MemberContainer"), type=ass.GetType("ScriptModule");
+        if(mtype!=null && type!=null && type.IsSubclassOf(mtype))
+        { if(fileTime.HasValue)
+          { FieldInfo fi = type.GetField("fileTime", BindingFlags.Static|BindingFlags.Public);
+            if(fi==null || fi.FieldType!=typeof(long) || (long)fi.GetValue(null)!=fileTime.Value.ToFileTimeUtc())
+              return false;
+          }
+          return type.GetConstructor(Type.EmptyTypes)!=null;
+        }
       }
       catch { }
+      return false;
+    }
+  }
+
+  static MemberContainer LoadFromCache(string dllPath) { return LoadFromCache(dllPath, null); }
+  static MemberContainer LoadFromCache(string dllPath, DateTime? fileTime)
+  { 
+    #if DEBUG
+    if(File.Exists(dllPath))
+    { AppDomain domain = AppDomain.CreateDomain("Scripting Loader Domain");
+      try
+      { Assembly current = Assembly.GetExecutingAssembly();
+        if(((TestLoader)domain.CreateInstanceFromAndUnwrap(current.Location, typeof(TestLoader).FullName))
+             .TryLoad(current.FullName, dllPath, fileTime))
+          return Assembly.LoadFrom(dllPath).GetType("ScriptModule").GetConstructor(Type.EmptyTypes)
+                         .Invoke(null) as MemberContainer;
+      }
+      catch { }
+      finally { AppDomain.Unload(domain); }
+    }
     #endif
     return null;
   }

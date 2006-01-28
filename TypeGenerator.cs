@@ -89,7 +89,8 @@ public sealed class TypeGenerator
   }
   public CodeGenerator DefineMethod(MethodAttributes attrs, string name, bool final,
                                     Type retType, params Type[] paramTypes)
-  { if(final) attrs |= MethodAttributes.Final;
+  { if((attrs&MethodAttributes.Static)!=0) attrs &= ~MethodAttributes.Final;
+    else if(final) attrs |= MethodAttributes.Final;
     MethodBuilder mb = TypeBuilder.DefineMethod(name, attrs, retType, paramTypes);
     return Options.Current.Language.MakeCodeGenerator(this, mb, mb.GetILGenerator());
   }
@@ -128,8 +129,11 @@ public sealed class TypeGenerator
   { MethodAttributes attrs = baseMethod.Attributes & ~(MethodAttributes.Abstract|MethodAttributes.NewSlot) |
                              MethodAttributes.HideBySig;
     if(final) attrs |= MethodAttributes.Final;
-    MethodBuilder mb = TypeBuilder.DefineMethod(baseMethod.Name, attrs, baseMethod.ReturnType,
-                                                GetParamTypes(baseMethod.GetParameters()));
+    ParameterInfo[] pis = baseMethod.GetParameters();
+    MethodBuilder mb = TypeBuilder.DefineMethod(baseMethod.Name, attrs, baseMethod.ReturnType, GetParamTypes(pis));
+    for(int i=0,offset=mb.IsStatic ? 0 : 1; i<pis.Length; i++)
+      mb.DefineParameter(i+offset, pis[i].Attributes, pis[i].Name);
+
     // TODO: figure out how to use this properly
     //TypeBuilder.DefineMethodOverride(mb, baseMethod);
     return Options.Current.Language.MakeCodeGenerator(this, mb, mb.GetILGenerator());
@@ -252,10 +256,10 @@ public sealed class TypeGenerator
   }
 
   public CodeGenerator DefineStaticMethod(string name, Type retType, params Type[] paramTypes)
-  { return DefineMethod(MethodAttributes.Public|MethodAttributes.Static, name, retType, paramTypes);
+  { return DefineMethod(MethodAttributes.Public|MethodAttributes.Static, name, false, retType, paramTypes);
   }
   public CodeGenerator DefineStaticMethod(MethodAttributes attrs, string name, Type retType, params Type[] paramTypes)
-  { return DefineMethod(attrs|MethodAttributes.Static, name, retType, paramTypes);
+  { return DefineMethod(attrs|MethodAttributes.Static, name, false, retType, paramTypes);
   }
 
   public Type FinishType()
@@ -279,13 +283,13 @@ public sealed class TypeGenerator
 
   public bool GetNamedConstant(string name, Type type, out Slot slot)
   { if(!namedConstants.TryGetValue(name, out slot))
-    { slot = new StaticSlot(TypeBuilder.DefineField("c$"+numConstants++, type, FieldAttributes.Static));
+    { slot = new StaticSlot(TypeBuilder.DefineField("c$"+numConstants++, type,
+                                                    FieldAttributes.Static|FieldAttributes.Private|FieldAttributes.InitOnly));
       return false;
     }
     return true;
   }
 
-  // TODO: merge identical lists
   public Slot GetConstant(object value)
   { Slot slot;
     bool hash = Convert.GetTypeCode(value)!=TypeCode.Object || value is Binding || value is MultipleValues ||
@@ -330,7 +334,8 @@ public sealed class TypeGenerator
     if(slot==null)
     { Type type = value.GetType();
       if(type.IsValueType) type=typeof(object);
-      FieldBuilder fb = TypeBuilder.DefineField("c$"+numConstants++, type, FieldAttributes.Static);
+      FieldBuilder fb = TypeBuilder.DefineField("c$"+numConstants++, type,
+                                                FieldAttributes.Static|FieldAttributes.Private|FieldAttributes.InitOnly);
       slot = new StaticSlot(fb);
       if(hash) constants[value] = slot;
       else { constObjs.Add(value); constSlots.Add(slot); }
