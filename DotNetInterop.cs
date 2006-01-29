@@ -155,10 +155,14 @@ public abstract class FunctionWrapper : IProcedure, IProperty
 
     // check types of all normal (non-paramarray) parameters
     for(int i=0; i<numNP; i++)
-    { Conversion conv = Ops.ConvertTo(types[i], ptypes[i]);
-      if(conv==Conversion.None) return Conversion.None;
-      if(conv<ret) ret=conv;
-    }
+      if(ptypes[i].IsByRef)
+      { if(types[i]!=typeof(Reference)) return Conversion.None;
+      }
+      else
+      { Conversion conv = Ops.ConvertTo(types[i], ptypes[i]);
+        if(conv==Conversion.None) return Conversion.None;
+        if(conv<ret) ret=conv;
+      }
 
     if(paramArray)
     { Type etype = ptypes[numNP].GetElementType();
@@ -985,7 +989,7 @@ public sealed class ReflectedField : SimpleProcedure, IProperty
   #endregion
 
   readonly IProcedure proc;
-  readonly bool isStatic, readOnly;
+  internal readonly bool isStatic, readOnly;
 }
 #endregion
 
@@ -1185,7 +1189,29 @@ public sealed class ReflectedType : MemberContainer, IProcedure
   public void Import(TopLevel top, bool impersonateLocal) { Import(top, null, null, impersonateLocal); }
   public override void Import(TopLevel top, string[] names, string[] asNames) { Import(top, names, asNames, false); }
   public void Import(TopLevel top, string[] names, string[] asNames, bool impersonateLocal)
-  { Importer.Import(top, Dict, impersonateLocal ? top : null, names, asNames, "type '"+Ops.TypeName(Type)+"'");
+  { Dictionary<string,object> temp;
+    if(dict==null) Initialize();
+    if(names==null)
+    { temp = new Dictionary<string,object>(dict);
+      foreach(KeyValuePair<string,object> de in dict)
+      { ReflectedField rf = de.Value as ReflectedField;
+        object value;
+        if(rf!=null && rf.isStatic && rf.Get(this, out value)) temp[de.Key] = value;
+      }
+    }
+    else
+    { temp = new Dictionary<string,object>(names.Length);
+      for(int i=0; i<names.Length; i++)
+      { object value;
+        if(dict.TryGetValue(names[i], out value))
+        { ReflectedField field = value as ReflectedField;
+          if(field!=null && field.isStatic && !field.Get(this, out value)) value = dict[names[i]];
+          temp[asNames[i]] = value;
+        }
+      }
+    }
+
+    Importer.Import(top, temp, impersonateLocal ? top : null, null, null, "type '"+Ops.TypeName(Type)+"'");
   }
 
   public bool IsInstance(object obj)
@@ -1296,6 +1322,11 @@ public sealed class ReflectedType : MemberContainer, IProcedure
       if(set!=null) ps.Sets.Add(set);
     }
 
+    string defaultProperty;
+    { object[] attrs = Type.GetCustomAttributes(typeof(DefaultMemberAttribute), true);
+      defaultProperty = attrs.Length==0 ? null : ((DefaultMemberAttribute)attrs[0]).MemberName;
+    }
+
     foreach(DictionaryEntry de in overloads)
     { string name = (string)de.Key;
       Properties ps = (Properties)de.Value;
@@ -1310,6 +1341,7 @@ public sealed class ReflectedType : MemberContainer, IProcedure
         bool isStatic = (ps.Gets.Count==0 ? ps.Sets : ps.Gets)[0].IsStatic;
         dict[name] = new ReflectedProperty(get, set, name, ps.NumParams, isStatic);
       }
+      if(name==defaultProperty) dict["[]"] = dict[name];
       ps.Dispose();
     }
 

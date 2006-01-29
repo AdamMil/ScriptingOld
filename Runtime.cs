@@ -983,8 +983,12 @@ public static class Ops
   public static object GetIndex(object col, object index)
   { IList list = col as IList;
     if(list!=null) return list[ToInt(index)];
+
     IDictionary dict = col as IDictionary;
     if(dict!=null) return dict[index];
+
+    if(CallProperty(col, "[]", out index, new object[] { col, index })) return index;
+
     throw new ArgumentException("objects of type '"+TypeName(col)+"' are not indexable");
   }
 
@@ -994,7 +998,8 @@ public static class Ops
     else
     { IDictionary dict = col as IDictionary;
       if(dict!=null) dict[index] = value;
-      else throw new ArgumentException("objects of type '"+TypeName(col)+"' are not indexable");
+      else if(!CallProperty(col, "[]", out value, new object[] { col, index, value }))
+        throw new ArgumentException("objects of type '"+TypeName(col)+"' are not indexable");
     }
   }
 

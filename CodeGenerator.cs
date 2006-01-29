@@ -473,7 +473,7 @@ public class CodeGenerator
     for(int i=0; i<nodes.Length; i++)
       if(nodes[i]!=null && nodes[i].ClearsStack && clears++!=i) beginning = false;
 
-    if(clears==0) foreach(Node n in nodes) if(n!=null) n.Emit(this);
+    if(clears==0) foreach(Node n in nodes) EmitNode(n);
     else if(clears>2 || preserveOrder && !beginning)
     { Slot arr = AllocObjectArray(nodes);
       for(int i=0; i<nodes.Length; i++)
@@ -602,8 +602,8 @@ public class CodeGenerator
   }
 
   public void EmitTypeOf(Type type)
-  { if(type.IsByRef) // TODO: see if there's a better way to do this (rather than calling GetType with a string). this might not even be safe for types in other assemblies (we may need to search through assemblies). maybe optimize it by caching values?
-    { EmitString(type.FullName+"&");
+  { if(type.IsByRef) // TODO: see if there's a better way to do this (rather than calling GetType with a string). this might not even be safe for types in other assemblies (we may need to search through assemblies).
+    { EmitString(type.FullName);
       EmitCall(typeof(Type), "GetType", typeof(string));
     }
     else
