@@ -34,10 +34,8 @@ public abstract class BuiltinModule : CodeModule
   }
 }
 
-public sealed class ModuleGenerator
-{ ModuleGenerator() { }
-
-  /*
+public static class ModuleGenerator
+{ /*
   #region Generate from a ModuleNode
   public static Module Generate(ModuleNode mod)
   { TypeGenerator tg = SnippetMaker.Assembly.DefineType("module"+index.Next+"$"+mod.Name, typeof(Module));

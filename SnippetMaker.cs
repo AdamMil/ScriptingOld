@@ -31,10 +31,24 @@ public abstract class Snippet
 { public abstract object Run(LocalEnvironment ENV);
 }
 
-public sealed class SnippetMaker
-{ private SnippetMaker() { }
+public delegate object SnippetDelegate(LocalEnvironment env);
 
-  public static void DumpAssembly()
+public sealed class DynamicSnippet : Snippet
+{ public DynamicSnippet(DynamicMethod dm, Binding[] bindings, object[] constants)
+  { Proc = (SnippetDelegate)dm.CreateDelegate(typeof(SnippetDelegate), this);
+    Bindings  = bindings;
+    Constants = constants;
+  }
+
+  public override object Run(LocalEnvironment env) { return Proc(env); }
+
+  public readonly SnippetDelegate Proc;
+  readonly object[] Bindings;
+  readonly object[] Constants;
+}
+
+public static class SnippetMaker
+{ public static void DumpAssembly()
   { Assembly.Save();
     string bn = "snippets"+index.Next;
     Assembly = new AssemblyGenerator(bn, bn+".dll");
@@ -44,6 +58,8 @@ public sealed class SnippetMaker
   public static Snippet Generate(LambdaNode body, string typeName)
   { return Assembly.GenerateSnippet(body, typeName);
   }
+
+  public static DynamicSnippet GenerateDynamic(LambdaNode body) { return Assembly.GenerateDynamicSnippet(body); }
 
   public static AssemblyGenerator Assembly = new AssemblyGenerator("snippets", "snippets.dll", true);
 

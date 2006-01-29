@@ -38,10 +38,8 @@ namespace Scripting
 {
 
 #region AST
-public sealed class AST
-{ AST() { }
-
-  public static Node Create(Node body)
+public static class AST
+{ public static Node Create(Node body)
   { body.Preprocess();
     using(NodeDecorator nd = new NodeDecorator(null))
     { body.Walk(nd);
@@ -577,16 +575,20 @@ public abstract class Node
   public static bool HasInterrupt(Node n1, Node n2) { return n1!=null && n1.Interrupts || n2!=null && n2.Interrupts; }
   public static bool HasInterrupt(params Node[] nodes) { return HasInterrupt(nodes, 0, nodes.Length); }
   public static bool HasInterrupt(Node[] nodes, int start, int length)
-  { for(int i=0; i<length; i++)
-    { Node n = nodes[i+start];
+  { while(length-->0)
+    { Node n = nodes[length+start];
       if(n!=null && n.Interrupts) return true;
     }
     return false;
   }
 
   public static bool HasExcept(Node n1, Node n2) { return n1!=null && n1.ClearsStack || n2!=null && n2.ClearsStack; }
-  public static bool HasExcept(params Node[] nodes)
-  { if(nodes!=null) foreach(Node n in nodes) if(n!=null && n.ClearsStack) return true;
+  public static bool HasExcept(params Node[] nodes) { return HasExcept(nodes, 0, nodes.Length); }
+  public static bool HasExcept(Node[] nodes, int start, int length)
+  { while(length-->0)
+    { Node n = nodes[length+start];
+      if(n!=null && n.ClearsStack) return true;
+    }
     return false;
   }
 
@@ -1041,7 +1043,11 @@ public abstract class Language
   }
 
   public virtual bool IsConstantFunction(string name) { return Array.BinarySearch(constants, name)>=0; }
-  public virtual bool IsHashableConstant(object value) { return false; }
+
+  public virtual bool IsHashableConstant(object value)
+  { return Convert.GetTypeCode(value)!=TypeCode.Object || value is Binding || value is MultipleValues;
+  }
+
   public virtual bool IsTrue(object value) { return DefaultIsTrue(value); }
 
   public virtual object PackArguments(object[] args, int start, int length)
@@ -1052,10 +1058,6 @@ public abstract class Language
   }
 
   public virtual MemberContainer LoadModule(Type type) { return ModuleGenerator.Generate(type); }
-
-  public virtual CodeGenerator MakeCodeGenerator(TypeGenerator tg, MethodBase mb, ILGenerator ilg)
-  { return new CodeGenerator(tg, mb, ilg);
-  }
 
   public virtual System.Collections.IDictionary MakeKeywordDict()
   { return new System.Collections.Specialized.HybridDictionary();
@@ -2371,8 +2373,10 @@ public sealed class GeneratorNode : Node
   public Label TrueLabel;
   
   ConstructorInfo MakeGenerator(CodeGenerator cg)
-  { TypeGenerator tg = cg.TypeGenerator.DefineNestedType(TypeAttributes.Sealed, "generator$"+index.Next,
-                                                         typeof(Generator));
+  { TypeGenerator tg = cg.IsDynamicMethod
+      ? cg.AssemblyGenerator.DefineType(TypeAttributes.Sealed, "generator$"+index.Next, typeof(Generator))
+      : cg.TypeGenerator.DefineNestedType(TypeAttributes.Sealed, "generator$"+index.Next, typeof(Generator));
+
     CodeGenerator ncg = tg.DefineMethodOverride("InnerNext");
     ncg.IsGenerator = true;
     ncg.Namespace = new FieldNamespace(cg.Namespace, "_", ncg, new ThisSlot(tg.TypeBuilder));
@@ -2993,31 +2997,36 @@ public sealed class LambdaNode : Node
   { cg.MarkPosition(this);
     if(etype!=typeof(void))
     { index = lindex.Next;
-      CodeGenerator impl = MakeImplMethod(cg);
-
-      Slot tmpl;
-      if(!cg.TypeGenerator.GetNamedConstant("template"+index, typeof(Template), out tmpl))
-      { CodeGenerator icg = cg.TypeGenerator.GetInitializer();
-        icg.ILG.Emit(OpCodes.Ldftn, (MethodInfo)impl.MethodBase);
+      if(cg.IsDynamicMethod)
+      { cg.EmitConstantObject(MakeDynamicMethod(cg));
+        cg.EmitArgGet(0);
+        EmitDefaults(cg);
+        cg.EmitCall(typeof(DynamicMethodClosure), "Clone");
+      }
+      else
+      { Slot tmpl = cg.TypeGenerator.DefineConstantSlot(typeof(Template));
+        CodeGenerator icg=cg.TypeGenerator.GetInitializer(), func=MakeMethod(cg);
+        icg.ILG.Emit(OpCodes.Ldftn, (MethodInfo)func.MethodBase);
         icg.EmitLanguage(Ops.GetCurrentLanguage());
         icg.EmitString(Name!=null ? Name : Binding!=null ? Binding.String : null);
         icg.EmitConstantObject(Parameter.GetNames(Parameters));
         icg.EmitInt(NumRequired);
         icg.EmitBool(HasList);
         icg.EmitBool(HasDict);
-        icg.EmitBool(ClosedParams!=0 && ClosedVars==0);
+        icg.EmitBool(ClosedParams!=0 && ClosedVars==0); // TODO: is this correct? need more documentation here...
         icg.EmitNew(typeof(Template), typeof(IntPtr), typeof(Language), typeof(string), typeof(string[]), typeof(int),
                     typeof(bool), typeof(bool), typeof(bool));
         tmpl.EmitSet(icg);
+
+        tmpl.EmitGet(cg);
+        cg.EmitArgGet(0);
+        if(NumOptional==0) cg.EmitNew(RG.ClosureType, typeof(Template), typeof(LocalEnvironment));
+        else
+        { EmitDefaults(cg);
+          cg.EmitNew(RG.ClosureType, typeof(Template), typeof(LocalEnvironment), typeof(object[]));
+        }
       }
 
-      tmpl.EmitGet(cg);
-      cg.EmitArgGet(0);
-      if(NumOptional==0) cg.EmitNew(RG.ClosureType, typeof(Template), typeof(LocalEnvironment));
-      else
-      { EmitDefaults(cg);
-        cg.EmitNew(RG.ClosureType, typeof(Template), typeof(LocalEnvironment), typeof(object[]));
-      }
       etype = RG.ClosureType;
     }
     TailReturn(cg);
@@ -3077,19 +3086,8 @@ public sealed class LambdaNode : Node
     }
   }
 
-  CodeGenerator MakeImplMethod(CodeGenerator cg)
-  { CodeGenerator icg;
-    string name = "lambda$"+index.ToString();
-    if(Name!=null) name += "_"+Name;
-    icg = cg.TypeGenerator.DefineStaticMethod(name, typeof(object), typeof(LocalEnvironment), typeof(object[]));
-    
-    if(cg.TypeGenerator.Assembly.IsDebug)
-    { MethodBuilder mb = (MethodBuilder)icg.MethodBase;
-      mb.DefineParameter(1, ParameterAttributes.In, "ENV");
-      mb.DefineParameter(2, ParameterAttributes.In, "ARGS");
-    }
-
-    icg.Namespace = new LocalNamespace(cg.Namespace, icg);
+  void EmitMethodBody(CodeGenerator cg, CodeGenerator icg)
+  { icg.Namespace = new LocalNamespace(cg.Namespace, icg);
     if(CreatesLocalEnvironment)
     { icg.EmitArgGet(0);
       if(ClosedVars==0)
@@ -3126,6 +3124,39 @@ public sealed class LambdaNode : Node
     StartLabel = icg.ILG.DefineLabel();
     icg.ILG.MarkLabel(StartLabel);
     Body.Emit(icg);
+  }
+
+  DynamicMethodClosure MakeDynamicMethod(CodeGenerator cg)
+  { DynamicMethod dm = new DynamicMethod(Name==null ? "function" : Name, typeof(object),
+                                         new Type[] { typeof(DynamicMethodClosure), typeof(LocalEnvironment),
+                                                      typeof(object[]) }, typeof(DynamicMethodClosure));
+    if(cg.AssemblyGenerator.IsDebug)
+    { dm.DefineParameter(1, ParameterAttributes.In, "this");
+      dm.DefineParameter(2, ParameterAttributes.In, "ENV");
+      dm.DefineParameter(3, ParameterAttributes.In, "ARGS");
+    }
+    CodeGenerator icg = new CodeGenerator(cg.AssemblyGenerator, dm, typeof(DynamicMethodClosure));
+    EmitMethodBody(cg, icg);
+    Binding[] bindings = icg.GetConstantBindings();
+    object[]  constants = icg.GetConstantObjects();
+    icg.Finish();
+    Template template = // TODO: is the last argument correct? need more documentation here...
+      new Template(IntPtr.Zero, Ops.GetCurrentLanguage(), Name!=null ? Name : Binding!=null ? Binding.String : null,
+                   Parameter.GetNames(Parameters), NumRequired, HasList, HasDict, ClosedParams!=0 && ClosedVars!=0);
+    return new DynamicMethodClosure(dm, template, bindings, constants);
+  }
+
+  CodeGenerator MakeMethod(CodeGenerator cg)
+  { CodeGenerator icg;
+    string name = "lambda$"+index.ToString();
+    if(Name!=null) name += "_"+Name;
+    icg = cg.TypeGenerator.DefineStaticMethod(name, typeof(object), typeof(LocalEnvironment), typeof(object[]));
+    if(cg.AssemblyGenerator.IsDebug)
+    { MethodBuilder mb = (MethodBuilder)icg.MethodBase;
+      mb.DefineParameter(1, ParameterAttributes.In, "ENV");
+      mb.DefineParameter(2, ParameterAttributes.In, "ARGS");
+    }
+    EmitMethodBody(cg, icg);
     icg.Finish();
     return icg;
   }
@@ -3236,11 +3267,11 @@ public sealed class MarkSourceNode : DebugNode
 { public MarkSourceNode(string file, string code, Node body) { File=file; Code=code; Body=body; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { if(cg.TypeGenerator.Assembly.IsDebug)
-      cg.TypeGenerator.Assembly.Symbols =
-        cg.TypeGenerator.Assembly.Module.DefineDocument(File, Guid.Empty, Guid.Empty, Guid.Empty);
+  { if(cg.AssemblyGenerator.IsDebug && cg.AssemblyGenerator.Symbols==null)
+        cg.AssemblyGenerator.Symbols =
+          cg.AssemblyGenerator.Module.DefineDocument(File, Guid.Empty, Guid.Empty, Guid.Empty);
 
-    // TODO: see if this can be figured out. if(Code!=null) cg.TypeGenerator.Assembly.Symbols.SetSource(System.Text.Encoding.UTF8.GetBytes(Code));
+    // TODO: see if this can be figured out. if(Code!=null) cg.AssemblyGenerator.Symbols.SetSource(System.Text.Encoding.UTF8.GetBytes(Code));
 
     if(Body!=null || etype!=typeof(void))
     { cg.MarkPosition(this);

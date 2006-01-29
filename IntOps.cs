@@ -26,10 +26,8 @@ using System.Globalization;
 namespace Scripting.Backend
 {
 
-public sealed class IntOps
-{ IntOps() { }
-
-  public static object Add(int a, object b)
+public static class IntOps
+{ public static object Add(int a, object b)
   { try
     { if(b is int) return checked(a+(int)b);
       switch(Convert.GetTypeCode(b))

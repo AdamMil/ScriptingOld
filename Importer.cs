@@ -28,9 +28,8 @@ using Scripting.Backend;
 namespace Scripting
 {
 
-public sealed class Importer
-{ Importer() { }
-  static Importer() { SearchPaths.Add("."); }
+public static class Importer
+{ static Importer() { SearchPaths.Add("."); }
 
   public static void Import(TopLevel top, Dictionary<string,object> dict, TopLevel env,
                             string[] names, string[] asNames, string myName)

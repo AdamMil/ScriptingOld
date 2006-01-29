@@ -196,7 +196,7 @@ public sealed class LocalSlot : Slot
 { public LocalSlot(LocalBuilder lb) { builder = lb; }
   public LocalSlot(CodeGenerator cg, LocalBuilder lb, string name)
   { builder = lb; 
-    if(cg.TypeGenerator.Assembly.IsDebug) lb.SetLocalSymInfo(name);
+    if(!cg.IsDynamicMethod && cg.AssemblyGenerator.IsDebug) lb.SetLocalSymInfo(name);
   }
 
   public override Type Type { get { return builder.LocalType; } }
@@ -216,15 +216,13 @@ public sealed class NamedFrameSlot : Slot
   public override Type Type { get { return typeof(object); } }
 
   public override void EmitGet(CodeGenerator cg)
-  { SetupBinding(cg);
-    Binding.EmitGet(cg);
+  { EmitBinding(cg);
     if(Options.Current.Debug) cg.EmitCall(typeof(Ops), "CheckBinding");
     cg.EmitFieldGet(typeof(Binding), "Value");
   }
 
   public override void EmitGetAddr(CodeGenerator cg)
-  { SetupBinding(cg);
-    Binding.EmitGet(cg);
+  { EmitBinding(cg);
     if(Options.Current.Debug) cg.EmitCall(typeof(Ops), "CheckBinding");
     cg.EmitFieldGetAddr(typeof(Binding), "Value");
   }
@@ -237,8 +235,7 @@ public sealed class NamedFrameSlot : Slot
   }
 
   public override void EmitSet(CodeGenerator cg, Slot value)
-  { SetupBinding(cg);
-    Binding.EmitGet(cg);
+  { EmitBinding(cg);
     value.EmitGet(cg);
     cg.EmitFieldSet(typeof(Binding), "Value");
   }
@@ -246,8 +243,7 @@ public sealed class NamedFrameSlot : Slot
   public override void EmitSet(CodeGenerator cg, Node value)
   { if(value.ClearsStack) base.EmitSet(cg, value);
     else
-    { SetupBinding(cg);
-      Binding.EmitGet(cg);
+    { EmitBinding(cg);
       if(Options.Current.Debug) cg.EmitCall(typeof(Ops), "CheckBinding");
       value.Emit(cg);
       cg.EmitFieldSet(typeof(Binding), "Value");
@@ -257,11 +253,13 @@ public sealed class NamedFrameSlot : Slot
   public Slot Frame, Binding;
   public string Name;
 
-  void SetupBinding(CodeGenerator cg)
-  { if(Binding==null)
-    { if(TopLevel.Current==null)
-        throw new CompileTimeException("A top level environment is necessary to compile this code.");
-      Binding = cg.TypeGenerator.GetConstant(TopLevel.Current.GetBinding(Name));
+  void EmitBinding(CodeGenerator cg)
+  { if(TopLevel.Current==null)
+      throw new CompileTimeException("A top level environment is necessary to compile this code.");
+    if(cg.IsDynamicMethod) cg.EmitConstantObject(TopLevel.Current.GetBinding(Name));
+    else
+    { if(Binding==null) Binding = cg.TypeGenerator.GetConstant(TopLevel.Current.GetBinding(Name));
+      Binding.EmitGet(cg);
     }
   }
 }

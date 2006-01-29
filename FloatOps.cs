@@ -25,10 +25,8 @@ using System.Globalization;
 namespace Scripting.Backend
 {
 
-public sealed class FloatOps
-{ FloatOps() { }
-
-  public static object Add(double a, object b)
+public static class FloatOps
+{ public static object Add(double a, object b)
   { if(b is double) return a + (double)b;
     switch(Convert.GetTypeCode(b))
     { case TypeCode.Byte: return a + (byte)b;

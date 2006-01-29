@@ -27,9 +27,101 @@ using System.Reflection.Emit;
 namespace Scripting.Backend
 {
 
+#region ConstantHelper
+public sealed class ConstantHelper : IDisposable
+{ public void Dispose()
+  { if(constObjs!=null)
+    { constObjs.Dispose();
+      constObjs = null;
+    }
+    constBindings = null;
+    hash = null;
+  }
+
+  public Binding[] GetConstantBindings() { return constBindings==null ? null : constBindings.ToArray(); }
+  public object[] GetConstantObjects() { return constObjs==null ? null : constObjs.ToArray(); }
+
+  public int GetBindingIndex(Binding bind)
+  { if(constBindings==null) constBindings = new List<Binding>();
+    else for(int i=0; i<constBindings.Count; i++) if(constBindings[i]==bind) return i;
+    constBindings.Add(bind);
+    return constBindings.Count-1;
+  }
+
+  public int GetIndex(object value)
+  { int index;
+    GetIndex(value, out index);
+    return index;
+  }
+
+  public bool GetIndex(object value, out int index)
+  { bool hashable = Options.Current.Language.IsHashableConstant(value);
+
+    index = -1;
+    if(hashable)
+    { if(hash!=null)
+      { object ind = hash[value];
+        if(ind!=null) index = (int)ind;
+      }
+    }
+    else if(constObjs!=null)
+    { if(value is string[])
+      { string[] val = (string[])value;
+        for(int i=0; i<constObjs.Count; i++)
+        { string[] other = constObjs[i] as string[];
+          if(other!=null && val.Length==other.Length)
+          { for(int j=0; j<val.Length; j++) if(val[j] != other[j]) goto nextSA;
+            index = i;
+            break;
+          }
+          nextSA:;
+        }
+      }
+      else if(value is object[])
+      { object[] val = (object[])value;
+        for(int i=0; i<constObjs.Count; i++)
+        { object[] other = constObjs[i] as object[];
+          if(other!=null && val.Length==other.Length)
+          { for(int j=0; j<val.Length; j++) if(!Ops.AreEqual(val[j], other[j])) goto nextSA;
+            index = i;
+            break;
+          }
+          nextSA:;
+        }
+      }
+      else for(int i=0; i<constObjs.Count; i++) if(Ops.AreEqual(value, constObjs[i])) { index=i; break; }
+    }
+
+    if(index!=-1) return false;
+
+    if(constObjs==null) constObjs = CachedList<object>.Alloc();
+    constObjs.Add(value);
+    index = constObjs.Count-1;
+
+    if(hashable)
+    { if(hash==null) hash = new System.Collections.Hashtable();
+      hash[value] = index;
+    }
+
+    return true;
+  }
+
+  System.Collections.Hashtable hash;
+  CachedList<object> constObjs;
+  List<Binding> constBindings;
+}
+#endregion
+
 public class CodeGenerator
-{ public CodeGenerator(TypeGenerator tg, MethodBase mb, ILGenerator ilg)
-  { TypeGenerator=tg; MethodBase=mb; ILG=ilg;
+{ public CodeGenerator(TypeGenerator tg, ConstructorBuilder cb) : this(tg, cb, cb.GetILGenerator()) { }
+  public CodeGenerator(TypeGenerator tg, MethodBuilder mb) : this(tg, mb, mb.GetILGenerator()) { }
+  public CodeGenerator(TypeGenerator tg, MethodBase mb, ILGenerator ilg)
+  { AssemblyGenerator=tg.Assembly; TypeGenerator=tg; MethodBase=mb; ILG=ilg; isStatic=mb.IsStatic;
+  }
+  public CodeGenerator(AssemblyGenerator ag, DynamicMethod dm) : this(ag, dm, null) { }
+  public CodeGenerator(AssemblyGenerator ag, DynamicMethod dm, Type associatedType)
+  { AssemblyGenerator=ag; MethodBase=dm; ILG=dm.GetILGenerator(); IsDynamicMethod=true; AssociatedType=associatedType;
+    isStatic = associatedType==null;
   }
 
   public struct negbool { } // Used to represent the type of a boolean value that will end up being negated
@@ -57,7 +149,7 @@ public class CodeGenerator
 
   public void BoolToObject() { BoolToObject(false); }
   public void BoolToObject(bool negate)
-  { // TODO: possibly inline if optimizations are on?
+  { // TODO: possibly inline if optimizations are on? (the JIT should take care of it)
     /*Label yes=ILG.DefineLabel(), end=ILG.DefineLabel();
     ILG.Emit(negate ? OpCodes.Brfalse_S : OpCodes.Brtrue_S, yes);
     EmitFieldGet(typeof(Ops), "FALSE");
@@ -65,7 +157,7 @@ public class CodeGenerator
     ILG.MarkLabel(yes);
     EmitFieldGet(typeof(Ops), "TRUE");
     ILG.MarkLabel(end);*/
-    
+
     if(negate)
     { EmitInt(0);
       ILG.Emit(OpCodes.Ceq);
@@ -76,7 +168,7 @@ public class CodeGenerator
   public void Dup() { ILG.Emit(OpCodes.Dup); }
 
   public void EmitArgGet(int index)
-  { if(!MethodBase.IsStatic) index++;
+  { if(!isStatic) index++;
     switch(index)
     { case 0: ILG.Emit(OpCodes.Ldarg_0); break;
       case 1: ILG.Emit(OpCodes.Ldarg_1); break;
@@ -87,12 +179,12 @@ public class CodeGenerator
   }
 
   public void EmitArgGetAddr(int index)
-  { if(!MethodBase.IsStatic) index++;
+  { if(!isStatic) index++;
     ILG.Emit(index<256 ? OpCodes.Ldarga_S : OpCodes.Ldarga, index);
   }
 
   public void EmitArgSet(int index)
-  { if(!MethodBase.IsStatic) index++;
+  { if(!isStatic) index++;
     ILG.Emit(index<256 ? OpCodes.Starg_S : OpCodes.Starg, index);
   }
 
@@ -169,12 +261,40 @@ public class CodeGenerator
   }
 
   public void EmitConstantObject(object value)
+  { Type needed;
+    if(!IsDynamicMethod || value==null) needed = null;
+    else
+    { needed = value.GetType();
+      if(needed.IsValueType) needed = null;
+    }
+    EmitConstantObject(value, needed);
+  }
+
+  public void EmitConstantObject(object value, Type neededType)
   { if(value==null) ILG.Emit(OpCodes.Ldnull);
     else if(value is bool) EmitFieldGet(typeof(Ops), (bool)value ? "TRUE" : "FALSE");
     else
     { string s = value as string;
       if(s!=null) EmitString(s);
-      else TypeGenerator.GetConstant(value).EmitGet(this);
+      else if(!IsDynamicMethod) TypeGenerator.GetConstant(value).EmitGet(this);
+      else
+      { if(constants==null) constants = new ConstantHelper();
+        if(value is Binding)
+        { int index = constants.GetBindingIndex((Binding)value);
+          EmitThis();
+          EmitFieldGet(AssociatedType, "Bindings");
+          EmitInt(index);
+          ILG.Emit(OpCodes.Ldelem_Ref);
+        }
+        else
+        { int index = constants.GetIndex(value);
+          EmitThis();
+          EmitFieldGet(AssociatedType, "Constants");
+          EmitInt(index);
+          ILG.Emit(OpCodes.Ldelem_Ref);
+          if(neededType!=null && neededType!=typeof(object)) ILG.Emit(OpCodes.Castclass, neededType);
+        }
+      }
     }
   }
 
@@ -470,7 +590,7 @@ public class CodeGenerator
   }
 
   public void EmitThis()
-  { if(MethodBase.IsStatic) throw new InvalidOperationException("no 'this' for a static method");
+  { if(isStatic) throw new InvalidOperationException("no 'this' for a static method");
     ILG.Emit(OpCodes.Ldarg_0);
   }
 
@@ -511,6 +631,7 @@ public class CodeGenerator
   public void Finish()
   { if(localTemps!=null) { localTemps.Dispose(); localTemps=null; }
     if(nsTemps!=null) { nsTemps.Dispose(); nsTemps=null; }
+    if(constants!=null) { constants.Dispose(); constants=null; }
   }
 
   // TODO: go through the calls to this method and check whether the ones that are excluded due to an interrupt
@@ -527,12 +648,22 @@ public class CodeGenerator
     }
   }
 
+  public Binding[] GetConstantBindings()
+  { if(!IsDynamicMethod) throw new InvalidOperationException("This is only for dynamic methods.");
+    return constants==null ? null : constants.GetConstantBindings();
+  }
+
+  public object[] GetConstantObjects()
+  { if(!IsDynamicMethod) throw new InvalidOperationException("This is only for dynamic methods.");
+    return constants==null ? null : constants.GetConstantObjects();
+  }
+
   public void MarkPosition(Node node)
   { MarkPosition(node.StartPos.Line, node.StartPos.Column, node.EndPos.Line, node.EndPos.Column);
   }
   public void MarkPosition(int startLine, int startCol, int endLine, int endCol)
-  { if(TypeGenerator.Assembly.IsDebug && startLine!=0 && endLine!=0)
-      ILG.MarkSequencePoint(TypeGenerator.Assembly.Symbols, startLine, startCol, endLine, endCol);
+  { if(!IsDynamicMethod && AssemblyGenerator.IsDebug && startLine!=0 && endLine!=0)
+      ILG.MarkSequencePoint(AssemblyGenerator.Symbols, startLine, startCol, endLine, endCol);
   }
 
   public void SetupNamespace(int closedVars) { SetupNamespace(closedVars, null); }
@@ -624,9 +755,12 @@ public class CodeGenerator
   public Namespace Namespace;
   public bool IsGenerator;
 
+  public readonly AssemblyGenerator AssemblyGenerator;
   public readonly TypeGenerator TypeGenerator;
   public readonly MethodBase MethodBase;
-  public readonly ILGenerator   ILG;
+  public readonly ILGenerator ILG;
+  public readonly Type AssociatedType;
+  public readonly bool IsDynamicMethod;
 
   const BindingFlags SearchAll = BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Instance|BindingFlags.Static;
 
@@ -644,7 +778,9 @@ public class CodeGenerator
   }
 
   CachedList<Slot> localTemps, nsTemps;
+  ConstantHelper constants;
   int localNameIndex;
+  bool isStatic;
 }
 
 } // namespace Scripting.Backend
