@@ -1423,7 +1423,10 @@ public sealed class BodyNode : Node
 #region BreakNode
 public class BreakNode : JumpNode
 { public BreakNode(string name) : base(name) { }
-  public BreakNode(string name, Node returnValue) : base(name) { Return = returnValue; }
+  public BreakNode(string name, Node returnValue) : base(name)
+  { Return   = returnValue;
+    IsSimple = Return==null;
+  }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
   { cg.MarkPosition(this);
@@ -2821,12 +2824,16 @@ public sealed class IfNode : Node
     else
     { Node ifTrue=IfTrue, ifFalse=IfFalse;
 
-      bool trueJump = false;
+      bool trueJump=false, swapped=false;
       if(Options.Current.OptimizeAny)
-      { if(ifTrue is JumpNode && !((JumpNode)ifTrue).NeedsLeave) trueJump = true;
-        else if(ifFalse!=null && ifFalse is JumpNode && !((JumpNode)ifFalse).NeedsLeave)
-        { Node t=ifTrue; ifTrue=ifFalse; ifFalse=t;
-          trueJump = true;
+      { JumpNode jump = ifTrue as JumpNode;
+        if(jump!=null && jump.IsSimple && !jump.NeedsLeave) trueJump = true;
+        else
+        { jump = ifFalse as JumpNode;
+          if(jump!=null && jump.IsSimple && !jump.NeedsLeave)
+          { Node t=ifTrue; ifTrue=ifFalse; ifFalse=t;
+            trueJump = swapped = true;
+          }
         }
       }
 
@@ -2844,13 +2851,13 @@ public sealed class IfNode : Node
 
       Type type = typeof(bool);
       Test.Emit(cg, ref type);
-      if(trueJump) // a peephole optimization for "if(cond) goto label;" to avoid an ugly IL sequence
+      if(trueJump) // an optimization for "if(cond) goto label;" to avoid an ugly IL sequence
       { JumpNode jn = (JumpNode)ifTrue;
-        if(type==typeof(bool)) cg.ILG.Emit(OpCodes.Brtrue, jn.Label);
-        else if(type==typeof(CodeGenerator.negbool)) cg.ILG.Emit(OpCodes.Brfalse, jn.Label);
+        if(type==typeof(bool)) cg.ILG.Emit(swapped ? OpCodes.Brfalse : OpCodes.Brtrue, jn.Label);
+        else if(type==typeof(CodeGenerator.negbool)) cg.ILG.Emit(swapped ? OpCodes.Brtrue : OpCodes.Brfalse, jn.Label);
         else
         { cg.EmitIsTrue();
-          cg.ILG.Emit(OpCodes.Brtrue, jn.Label);
+          cg.ILG.Emit(swapped ? OpCodes.Brfalse : OpCodes.Brtrue, jn.Label);
         }
       }
       else
@@ -2866,9 +2873,10 @@ public sealed class IfNode : Node
         { ifTrue.Emit(cg, ref truetype);
           Debug.Assert(AreCompatible(truetype, etype));
         }
+
+        if(hasEnd) cg.ILG.Emit(OpCodes.Br, endlbl);
       }
 
-      if(hasEnd) cg.ILG.Emit(OpCodes.Br, endlbl);
       if(!trueJump) cg.ILG.MarkLabel(falselbl);
 
       if(ifFalse!=null || truetype!=typeof(void))
@@ -2961,7 +2969,7 @@ public abstract class JumpNode : Node
 
   public Label Label;
   public string Name;
-  public bool   NeedsLeave;
+  public bool   NeedsLeave, IsSimple;
 }
 #endregion
 
@@ -3013,7 +3021,7 @@ public sealed class LambdaNode : Node
         icg.EmitInt(NumRequired);
         icg.EmitBool(HasList);
         icg.EmitBool(HasDict);
-        icg.EmitBool(ClosedParams!=0 && ClosedVars==0); // TODO: is this correct? need more documentation here...
+        icg.EmitBool(ClosedParams!=0 && ClosedVars==0);
         icg.EmitNew(typeof(Template), typeof(IntPtr), typeof(Language), typeof(string), typeof(string[]), typeof(int),
                     typeof(bool), typeof(bool), typeof(bool));
         tmpl.EmitSet(icg);
@@ -3140,9 +3148,9 @@ public sealed class LambdaNode : Node
     Binding[] bindings = icg.GetConstantBindings();
     object[]  constants = icg.GetConstantObjects();
     icg.Finish();
-    Template template = // TODO: is the last argument correct? need more documentation here...
+    Template template =
       new Template(IntPtr.Zero, Ops.GetCurrentLanguage(), Name!=null ? Name : Binding!=null ? Binding.String : null,
-                   Parameter.GetNames(Parameters), NumRequired, HasList, HasDict, ClosedParams!=0 && ClosedVars!=0);
+                   Parameter.GetNames(Parameters), NumRequired, HasList, HasDict, ClosedParams!=0 && ClosedVars==0);
     return new DynamicMethodClosure(dm, template, bindings, constants);
   }
 
@@ -3344,6 +3352,42 @@ public sealed class OpNode : Node
 
   public readonly Operator Operator;
   public readonly Node[] Nodes;
+}
+#endregion
+
+#region ReferenceNode
+public sealed class ReferenceNode : Node
+{ public ReferenceNode(Node expression) { Expression = expression; }
+
+  public override void Emit(CodeGenerator cg, ref Type etype)
+  { if(etype==typeof(void)) Expression.EmitVoid(cg);
+    else
+    { Expression.Emit(cg);
+      cg.EmitNew(typeof(Reference), typeof(object));
+      TailReturn(cg);
+      etype = typeof(Reference);
+    }
+  }
+
+  public override object Evaluate() { return new Reference(Expression.Evaluate()); }
+  public override Type GetNodeType() { return typeof(Reference); }
+
+  public override void MarkTail(bool tail)
+  { Tail = tail;
+    Expression.MarkTail(false);
+  }
+
+  public override void SetFlags()
+  { ClearsStack = Expression.ClearsStack;
+    Interrupts  = Expression.Interrupts;
+  }
+
+  public override void Walk(IWalker w)
+  { if(w.Walk(this)) Expression.Walk(w);
+    w.PostWalk(this);
+  }
+
+  public readonly Node Expression;
 }
 #endregion
 
@@ -3886,8 +3930,8 @@ public sealed class VariableNode : Node
   public VariableNode(Name name) { Name = name; }
 
   public override void Emit(CodeGenerator cg, ref Type etype)
-  { cg.MarkPosition(this);
-    if(Options.Current.Debug && !Name.Type.IsValueType) // FIXME: add use-of-unassigned-variable check for value types
+  { cg.MarkPosition(this); // FIXME: add use-of-unassigned-variable check for value types
+    if(Options.Current.Debug && Name.Depth!=Name.Global && !Name.Type.IsValueType) // global variables have their own checking
     { cg.EmitGet(Name);
       cg.Dup();
       cg.EmitString(Name.String);

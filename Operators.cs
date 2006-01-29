@@ -130,8 +130,8 @@ public sealed class LogicalNotOperator : UnaryOperator
     node.Emit(cg, ref type);
 
     if(etype==typeof(bool))
-    { if(type!=typeof(bool)) cg.EmitIsTrue(type);
-      etype = typeof(CodeGenerator.negbool);
+    { if(type==typeof(bool)) etype = typeof(CodeGenerator.negbool);
+      else if(type!=typeof(CodeGenerator.negbool)) cg.EmitIsFalse(type);
     }
     else
     { if(type!=typeof(bool) && type!=typeof(CodeGenerator.negbool)) cg.EmitIsTrue(type);
@@ -762,10 +762,30 @@ public sealed class LogicalAndOperator : Operator
 
   public override void Emit(string name, CodeGenerator cg, ref Type etype, params Node[] args)
   { if(args.Length==0)
-    { if(etype==typeof(bool)) { cg.EmitBool(true); return; }
-      else if(etype!=typeof(void)) cg.EmitFieldGet(typeof(Ops), "TRUE");
+    { if(etype==typeof(bool)) cg.EmitBool(true);
+      else if(etype!=typeof(void))
+      { cg.EmitFieldGet(typeof(Ops), "TRUE");
+        etype = typeof(object);
+      }
     }
-    else if(args.Length==1) args[0].Emit(cg);
+    else if(args.Length==1) args[0].Emit(cg, ref etype);
+    else if(etype==typeof(bool))
+    { Label shortCircuit=cg.ILG.DefineLabel(), done=cg.ILG.DefineLabel();
+      for(int i=0; i<args.Length; i++)
+      { Type type = typeof(bool);
+        args[i].Emit(cg, ref type);
+        if(type==typeof(CodeGenerator.negbool)) cg.ILG.Emit(OpCodes.Brtrue, shortCircuit);
+        else
+        { if(type!=typeof(bool)) cg.EmitIsTrue();
+          cg.ILG.Emit(OpCodes.Brfalse, shortCircuit);
+        }
+      }
+      cg.EmitBool(true);
+      cg.ILG.Emit(OpCodes.Br_S, done);
+      cg.ILG.MarkLabel(shortCircuit);
+      cg.EmitBool(false);
+      cg.ILG.MarkLabel(done);
+    }
     else
     { bool keepAround = Node.HasInterrupt(args);
       Slot tmp = cg.AllocLocalTemp(typeof(object), keepAround);
@@ -776,11 +796,12 @@ public sealed class LogicalAndOperator : Operator
         if(type==typeof(bool) || type==typeof(CodeGenerator.negbool))
         { if(type==typeof(CodeGenerator.negbool)) cg.EmitLogicalNot();
           cg.Dup();
-          cg.EmitCall(typeof(Ops), "FromBool");
+          cg.BoolToObject();
           tmp.EmitSet(cg);
         }
         else
-        { tmp.EmitSet(cg);
+        { cg.Dup();
+          tmp.EmitSet(cg);
           cg.EmitIsTrue();
         }
         cg.ILG.Emit(OpCodes.Brfalse, done);
@@ -788,8 +809,8 @@ public sealed class LogicalAndOperator : Operator
       cg.ILG.MarkLabel(done);
       tmp.EmitGet(cg);
       if(!keepAround) cg.FreeLocalTemp(tmp);
+      etype = typeof(object);
     }
-    etype = typeof(object);
   }
   
   public override object Evaluate(string name, params object[] args)
@@ -809,10 +830,30 @@ public sealed class LogicalOrOperator : Operator
 
   public override void Emit(string name, CodeGenerator cg, ref Type etype, params Node[] args)
   { if(args.Length==0)
-    { if(etype==typeof(bool)) { cg.EmitBool(true); return; }
-      else if(etype!=typeof(void)) cg.EmitFieldGet(typeof(Ops), "TRUE");
+    { if(etype==typeof(bool)) cg.EmitBool(false);
+      else if(etype!=typeof(void))
+      { cg.EmitFieldGet(typeof(Ops), "FALSE");
+        etype = typeof(object);
+      }
     }
-    else if(args.Length==1) args[0].Emit(cg);
+    else if(args.Length==1) args[0].Emit(cg, ref etype);
+    else if(etype==typeof(bool))
+    { Label shortCircuit=cg.ILG.DefineLabel(), done=cg.ILG.DefineLabel();
+      for(int i=0; i<args.Length; i++)
+      { Type type = typeof(bool);
+        args[i].Emit(cg, ref type);
+        if(type==typeof(CodeGenerator.negbool)) cg.ILG.Emit(OpCodes.Brfalse, shortCircuit);
+        else
+        { if(type!=typeof(bool)) cg.EmitIsTrue();
+          cg.ILG.Emit(OpCodes.Brtrue, shortCircuit);
+        }
+      }
+      cg.EmitBool(false);
+      cg.ILG.Emit(OpCodes.Br_S, done);
+      cg.ILG.MarkLabel(shortCircuit);
+      cg.EmitBool(true);
+      cg.ILG.MarkLabel(done);
+    }
     else
     { bool keepAround = Node.HasInterrupt(args);
       Slot tmp = cg.AllocLocalTemp(typeof(object), keepAround);
@@ -827,7 +868,8 @@ public sealed class LogicalOrOperator : Operator
           tmp.EmitSet(cg);
         }
         else
-        { tmp.EmitSet(cg);
+        { cg.Dup();
+          tmp.EmitSet(cg);
           cg.EmitIsTrue();
         }
         cg.ILG.Emit(OpCodes.Brtrue, done);
@@ -835,8 +877,8 @@ public sealed class LogicalOrOperator : Operator
       cg.ILG.MarkLabel(done);
       tmp.EmitGet(cg);
       if(!keepAround) cg.FreeLocalTemp(tmp);
+      etype = typeof(object);
     }
-    etype = typeof(object);
   }
 
   public override object Evaluate(string name, params object[] args)
