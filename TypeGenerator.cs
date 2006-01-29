@@ -39,8 +39,7 @@ public sealed class TypeGenerator
 
   public CodeGenerator DefineConstructor(params Type[] types) { return DefineConstructor(MethodAttributes.Public, types); }
   public CodeGenerator DefineConstructor(MethodAttributes attrs, params Type[] types)
-  { ConstructorBuilder cb = TypeBuilder.DefineConstructor(attrs, CallingConventions.Standard, types);
-    return Options.Current.Language.MakeCodeGenerator(this, cb, cb.GetILGenerator());
+  { return new CodeGenerator(this, TypeBuilder.DefineConstructor(attrs, CallingConventions.Standard, types));
   }
 
   public CodeGenerator DefineChainedConstructor(params Type[] paramTypes)
@@ -60,7 +59,7 @@ public sealed class TypeGenerator
           new CustomAttributeBuilder(typeof(ParamArrayAttribute).GetConstructor(Type.EmptyTypes), Ops.EmptyArray));
     }
 
-    CodeGenerator cg = Options.Current.Language.MakeCodeGenerator(this, cb, cb.GetILGenerator());
+    CodeGenerator cg = new CodeGenerator(this, cb);
     cg.EmitThis();
     for(int i=0; i<pi.Length; i++) cg.EmitArgGet(i);
     cg.EmitCall(parent);
@@ -69,8 +68,7 @@ public sealed class TypeGenerator
 
   public CodeGenerator DefineDefaultConstructor() { return DefineDefaultConstructor(MethodAttributes.Public); }
   public CodeGenerator DefineDefaultConstructor(MethodAttributes attrs)
-  { ConstructorBuilder cb = TypeBuilder.DefineDefaultConstructor(attrs);
-    return Options.Current.Language.MakeCodeGenerator(this, cb, cb.GetILGenerator());
+  { return new CodeGenerator(this, TypeBuilder.DefineDefaultConstructor(attrs));
   }
 
   public Slot DefineField(string name, Type type) { return DefineField(FieldAttributes.Public, name, type); }
@@ -91,8 +89,7 @@ public sealed class TypeGenerator
                                     Type retType, params Type[] paramTypes)
   { if((attrs&MethodAttributes.Static)!=0) attrs &= ~MethodAttributes.Final;
     else if(final) attrs |= MethodAttributes.Final;
-    MethodBuilder mb = TypeBuilder.DefineMethod(name, attrs, retType, paramTypes);
-    return Options.Current.Language.MakeCodeGenerator(this, mb, mb.GetILGenerator());
+    return new CodeGenerator(this, TypeBuilder.DefineMethod(name, attrs, retType, paramTypes));
   }
 
   public CodeGenerator DefineMethodOverride(string name)
@@ -136,7 +133,7 @@ public sealed class TypeGenerator
 
     // TODO: figure out how to use this properly
     //TypeBuilder.DefineMethodOverride(mb, baseMethod);
-    return Options.Current.Language.MakeCodeGenerator(this, mb, mb.GetILGenerator());
+    return new CodeGenerator(this, mb);
   }
 
   public TypeGenerator DefineNestedType(string name, Type parent) { return DefineNestedType(0, name, parent); }
@@ -267,89 +264,47 @@ public sealed class TypeGenerator
     { initGen.EmitReturn();
       initGen.Finish();
     }
+
     Type ret = TypeBuilder.CreateType();
+
     if(nestedTypes!=null)
     { foreach(TypeGenerator tg in nestedTypes) tg.FinishType();
       nestedTypes.Dispose();
+      nestedTypes = null;
     }
-    if(constObjs!=null) constObjs.Dispose();
-    if(constSlots!=null) constSlots.Dispose();
-    nestedTypes = null;
-    constObjs   = null;
-    constSlots  = null;
+    if(constants!=null) { constants.Dispose(); constants=null; }
+    if(constantSlots!=null) { constantSlots.Dispose(); constantSlots=null; }
 
     return ret;
   }
 
-  public bool GetNamedConstant(string name, Type type, out Slot slot)
-  { if(!namedConstants.TryGetValue(name, out slot))
-    { slot = new StaticSlot(TypeBuilder.DefineField("c$"+numConstants++, type,
-                                                    FieldAttributes.Static|FieldAttributes.Private|FieldAttributes.InitOnly));
-      return false;
-    }
-    return true;
+  public Slot DefineConstantSlot(Type type)
+  { return new StaticSlot(TypeBuilder.DefineField("c$"+numConstants++, type,
+                                                  FieldAttributes.Static|FieldAttributes.Private|FieldAttributes.InitOnly));
   }
 
   public Slot GetConstant(object value)
-  { Slot slot;
-    bool hash = Convert.GetTypeCode(value)!=TypeCode.Object || value is Binding || value is MultipleValues ||
-                Options.Current.Language.IsHashableConstant(value);
-
-    if(hash) constants.TryGetValue(value, out slot);
-    else
-    { if(constObjs==null) { constObjs = CachedList<object>.Alloc(); constSlots = CachedList<Slot>.Alloc(); }
-      else
-      { int index=-1;
-        if(value is string[])
-        { string[] val = (string[])value;
-          for(int i=0; i<constObjs.Count; i++)
-          { string[] other = constObjs[i] as string[];
-            if(other!=null && val.Length==other.Length)
-            { for(int j=0; j<val.Length; j++) if(val[j] != other[j]) goto nextSA;
-              index = i;
-              break;
-            }
-            nextSA:;
-          }
-        }
-        else if(value is object[])
-        { object[] val = (object[])value;
-          for(int i=0; i<constObjs.Count; i++)
-          { object[] other = constObjs[i] as object[];
-            if(other!=null && val.Length==other.Length)
-            { for(int j=0; j<val.Length; j++) if(val[j] != other[j]) goto nextSA;
-              index = i;
-              break;
-            }
-            nextSA:;
-          }
-        }
-        else index = constObjs.IndexOf(value);
-
-        if(index!=-1) return (Slot)constSlots[index];
-      }
-      slot = null;
+  { if(constants==null)
+    { constants = new ConstantHelper();
+      constantSlots = CachedList<Slot>.Alloc();
     }
 
-    if(slot==null)
-    { Type type = value.GetType();
-      if(type.IsValueType) type=typeof(object);
-      FieldBuilder fb = TypeBuilder.DefineField("c$"+numConstants++, type,
-                                                FieldAttributes.Static|FieldAttributes.Private|FieldAttributes.InitOnly);
-      slot = new StaticSlot(fb);
-      if(hash) constants[value] = slot;
-      else { constObjs.Add(value); constSlots.Add(slot); }
-      EmitConstantInitializer(value);
-      initGen.EmitFieldSet(fb);
-    }
+    int index;
+    if(!constants.GetIndex(value, out index)) return constantSlots[index];
+
+    Type type = value.GetType();
+    if(type.IsValueType) type=typeof(object);
+    FieldBuilder fb = TypeBuilder.DefineField("c$"+numConstants++, type,
+                                              FieldAttributes.Static|FieldAttributes.Private|FieldAttributes.InitOnly);
+    EmitConstantInitializer(value);
+    initGen.EmitFieldSet(fb);
+    Slot slot = new StaticSlot(fb);
+    constantSlots.Add(slot);
     return slot;
   }
 
   public CodeGenerator GetInitializer()
-  { if(initGen==null)
-    { ConstructorBuilder cb = TypeBuilder.DefineTypeInitializer();
-      initGen = Options.Current.Language.MakeCodeGenerator(this, cb, cb.GetILGenerator());
-    }
+  { if(initGen==null) initGen = new CodeGenerator(this, TypeBuilder.DefineTypeInitializer());
     return initGen;
   }
 
@@ -404,11 +359,9 @@ public sealed class TypeGenerator
     return paramTypes;
   }
 
-  Dictionary<object,Slot> constants = new Dictionary<object,Slot>();
-  Dictionary<string,Slot> namedConstants = new Dictionary<string,Slot>();
   CachedList<TypeGenerator> nestedTypes;
-  CachedList<Slot> constSlots;
-  CachedList<object> constObjs;
+  CachedList<Slot> constantSlots;
+  ConstantHelper constants;
   CodeGenerator initGen;
   int numConstants;
 }

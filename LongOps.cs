@@ -26,10 +26,8 @@ using System.Globalization;
 namespace Scripting.Backend
 {
 
-public sealed class LongOps
-{ LongOps() { }
-
-  public static object Add(long a, object b)
+public static class LongOps
+{ public static object Add(long a, object b)
   { try
     { switch(Convert.GetTypeCode(b))
       { case TypeCode.Byte: return checked(a + (byte)b);

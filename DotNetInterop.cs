@@ -201,9 +201,8 @@ public abstract class FunctionWrapperI : FunctionWrapper
 #endregion
 
 #region Interop
-public sealed class Interop
-{ Interop() { }
-
+public static class Interop
+{ 
   #region Call
   public static object Call(FunctionWrapper[] funcs, object[] args)
   { if(funcs.Length==1) return funcs[0].Call(args);

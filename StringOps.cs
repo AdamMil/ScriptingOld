@@ -25,10 +25,8 @@ using System.Text;
 namespace Scripting.Backend
 {
 
-public sealed class StringOps
-{ StringOps() { }
-
-  public static string Multiply(string str, object times)
+public static class StringOps
+{ public static string Multiply(string str, object times)
   { int n = Ops.ToInt(times);
     StringBuilder sb = new StringBuilder(str.Length*n);
     while(n-->0) sb.Append(str);

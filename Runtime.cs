@@ -28,8 +28,6 @@ using System.Reflection;
 using System.Reflection.Emit;
 using Scripting.Backend;
 
-// FIXME: if a lambda accesses top-level environment (by calling EVAL), it will get the TL of the caller,
-//        not of where it was defined
 // FIXME: implement tail-call elimination in interpreted mode
 namespace Scripting
 {
@@ -362,9 +360,8 @@ public sealed class MultipleValues
 #endregion
 
 #region Ops
-public sealed class Ops
-{ Ops() { }
-
+public static class Ops
+{ 
   #region Errors
   public static ArgumentException ArgError(string message) { return new ArgumentException(message); }
   public static ArgumentException ArgError(string format, params object[] args)
@@ -1653,6 +1650,9 @@ public sealed class InstanceWrapper : IProcedure
 #endregion
 
 #region Procedures
+public delegate object ProcedureDelegate(LocalEnvironment env, params object[] args);
+
+#region Lambda
 public abstract class Lambda : IFancyProcedure
 { public int MinArgs { get { return Template.NumParams; } }
   public int MaxArgs { get { return Template.HasList ? -1 : Template.NumParams; } }
@@ -1661,16 +1661,70 @@ public abstract class Lambda : IFancyProcedure
   public abstract object Call(params object[] args);
   public abstract object Call(object[] positional, string[] keywords, object[] values);
 
-  public override string ToString() { return Template.Name==null ? "#<lambda>" : "#<lambda '"+Template.Name+"'>"; }
+  public override string ToString() { return Template.Name==null ? "#<function>" : "#<function '"+Template.Name+"'>"; }
 
   public Template Template;
 }
+#endregion
 
-public abstract class Closure : Lambda
+#region ClosureBase
+public abstract class ClosureBase : Lambda
 { public LocalEnvironment Environment;
   public object[] Defaults;
 }
+#endregion
 
+#region DynamicMethodClosure
+public sealed class DynamicMethodClosure : ClosureBase
+{ public DynamicMethodClosure(DynamicMethod dm, Template template, Binding[] bindings, object[] constants)
+  { Proc = (ProcedureDelegate)dm.CreateDelegate(typeof(ProcedureDelegate), this);
+    Template  = template;
+    Bindings  = bindings;
+    Constants = constants;
+  }
+
+  public DynamicMethodClosure Clone(LocalEnvironment env, object[] defaults)
+  { DynamicMethodClosure dm = (DynamicMethodClosure)MemberwiseClone();
+    dm.Environment = env;
+    dm.Defaults    = defaults;
+    return dm;
+  }
+
+  public override object Call(params object[] args)
+  { Template oldTemplate = Ops.CurrentFunction;
+    TopLevel oldTop = TopLevel.Current;
+    try
+    { Ops.CurrentFunction = Template;
+      TopLevel.Current = Template.TopLevel;
+      return Proc(Environment, Template.FixArgs(args, Defaults));
+    }
+    finally
+    { Ops.CurrentFunction = oldTemplate;
+      TopLevel.Current = oldTop;
+    }
+  }
+
+  public override object Call(object[] positional, string[] keywords, object[] values)
+  { Template oldTemplate = Ops.CurrentFunction;
+    TopLevel oldTop = TopLevel.Current;
+    try
+    { Ops.CurrentFunction = Template;
+      TopLevel.Current = Template.TopLevel;
+      return Proc(Environment, Template.MakeArgs(positional, Defaults, keywords, values));
+    }
+    finally
+    { Ops.CurrentFunction = oldTemplate;
+      TopLevel.Current = oldTop;
+    }
+  }
+
+  readonly ProcedureDelegate Proc;
+  readonly object[] Bindings;
+  readonly object[] Constants;
+}
+#endregion
+
+#region InterpretedProcedure
 public sealed class InterpretedProcedure : Lambda
 { public InterpretedProcedure(string[] paramNames, Node body)
     : this(Options.Current.Language, null, paramNames, false, false, body) { }
@@ -1705,29 +1759,29 @@ public sealed class InterpretedProcedure : Lambda
   public readonly object[] Defaults;
 
   object DoCall(object[] args)
-  { TopLevel oldt = TopLevel.Current;
-    if(Template.NumParams==0)
-      try
-      { TopLevel.Current = Template.TopLevel;
-        return Body.Evaluate();
-      }
-      finally { TopLevel.Current = oldt; }
-    else
-    { InterpreterEnvironment ne, oldi=InterpreterEnvironment.Current;
-      try
-      { InterpreterEnvironment.Current = ne = new InterpreterEnvironment(oldi);
-        TopLevel.Current = Template.TopLevel;
+  { Template oldTemplate = Ops.CurrentFunction;
+    TopLevel oldTop = TopLevel.Current;
+    InterpreterEnvironment oldEnv = InterpreterEnvironment.Current;
+    try
+    { Ops.CurrentFunction = Template;
+      TopLevel.Current = Template.TopLevel;
+      if(Template.NumParams!=0)
+      { InterpreterEnvironment ne = new InterpreterEnvironment(oldEnv);
         for(int i=0; i<Template.NumParams; i++) ne.Bind(Template.ParamNames[i], args[i]);
-        return Body.Evaluate();
+        InterpreterEnvironment.Current = ne;
       }
-      finally
-      { InterpreterEnvironment.Current = oldi;
-        TopLevel.Current = oldt;
-      }
+      return Body.Evaluate();
+    }
+    finally
+    { Ops.CurrentFunction = oldTemplate;
+      TopLevel.Current = oldTop;
+      InterpreterEnvironment.Current = oldEnv;
     }
   }
 }
+#endregion
 
+#region SimpleProcedure
 public abstract class SimpleProcedure : IProcedure
 { public SimpleProcedure(string name, int min, int max) { this.name=name; this.min=min; this.max=max; }
 
@@ -1746,6 +1800,7 @@ public abstract class SimpleProcedure : IProcedure
   protected bool needsFreshArgs;
 }
 #endregion
+#endregion
 
 #region Reference
 public sealed class Reference
@@ -1759,62 +1814,70 @@ public sealed class Reference
 public sealed class RG
 { 
   #if !COMPILE_LOWLEVEL
-  static RG() { ClosureType = typeof(ClosureF); }
+  static RG() { ClosureType = typeof(Closure); }
   #else
   static RG()
-  { string dllPath = System.IO.Path.Combine(Scripting.SystemDllCache, "Scripting.LowLevel.dll");
+  { string dllPath = System.IO.Path.Combine(Scripting.InstallationPath, "Scripting.LowLevel.dll");
 
     AssemblyGenerator ag = new AssemblyGenerator("Scripting.LowLevel", dllPath, false);
     TypeGenerator tg;
     CodeGenerator cg;
 
     #region Closure
-    { tg = ag.DefineType(TypeAttributes.Public|TypeAttributes.Sealed, "Scripting.Backend.ClosureF", typeof(Closure));
+    { tg = ag.DefineType(TypeAttributes.Public|TypeAttributes.Sealed, "Scripting.Backend.Closure", typeof(ClosureBase));
 
-      // constructor 1
+      #region Constructor(Template, LocalEnvironment)
       cg = tg.DefineConstructor(new Type[] { typeof(Template), typeof(LocalEnvironment) });
       cg.EmitThis();
       cg.EmitArgGet(0);
       cg.EmitFieldSet(typeof(Lambda), "Template");
       cg.EmitThis();
       cg.EmitArgGet(1);
-      cg.EmitFieldSet(typeof(Closure), "Environment");
+      cg.EmitFieldSet(typeof(ClosureBase), "Environment");
       cg.EmitReturn();
       cg.Finish();
+      #endregion
 
-      // constructor 2
+      #region Constructor(Template, LocalEnvironment, object[])
       cg = tg.DefineConstructor(new Type[] { typeof(Template), typeof(LocalEnvironment), typeof(object[]) });
       cg.EmitThis();
       cg.EmitArgGet(0);
       cg.EmitFieldSet(typeof(Lambda), "Template");
       cg.EmitThis();
       cg.EmitArgGet(1);
-      cg.EmitFieldSet(typeof(Closure), "Environment");
+      cg.EmitFieldSet(typeof(ClosureBase), "Environment");
       cg.EmitThis();
       cg.EmitArgGet(2);
-      cg.EmitFieldSet(typeof(Closure), "Defaults");
+      cg.EmitFieldSet(typeof(ClosureBase), "Defaults");
       cg.EmitReturn();
       cg.Finish();
+      #endregion
 
-      // Call(object[])
+      #region Call(object[])
       cg = tg.DefineMethodOverride(typeof(Lambda).GetMethod("Call", new Type[] { typeof(object[]) }), true);
       Slot oldFunc = cg.AllocLocalTemp(typeof(Template));
-      cg.EmitFieldGet(typeof(Ops), "CurrentFunction");
+      Slot oldTop  = cg.AllocLocalTemp(typeof(TopLevel));
+      cg.EmitFieldGet(typeof(Ops), "CurrentFunction");  // Template oldFunc = Ops.CurrentFunction;
       oldFunc.EmitSet(cg);
+      cg.EmitFieldGet(typeof(TopLevel), "Current");     // TopLevel oldTop = TopLevel.Current;
+      oldTop.EmitSet(cg);
 
-      cg.EmitThis();
-      cg.EmitFieldGet(typeof(Lambda), "Template");
+      cg.ILG.BeginExceptionBlock();                     // try {
+      cg.EmitThis();                                    // TopLevel.Current = Template.TopLevel
+      cg.EmitFieldGet(typeof(Lambda), "Template");      // Ops.CurrentFunction = Template;
+      cg.Dup();
+      cg.EmitFieldGet(typeof(Template), "TopLevel");
+      oldTop.EmitSet(cg);
       cg.EmitFieldSet(typeof(Ops), "CurrentFunction");
 
-      cg.ILG.BeginExceptionBlock();
-      cg.EmitThis();
-      cg.EmitFieldGet(typeof(Closure), "Environment");
+      cg.EmitThis();                                    // return Template.FuncPtr(Environment, Template.FixArgs(
+      cg.EmitFieldGet(typeof(ClosureBase), "Environment");  
 
       cg.EmitThis();
       cg.EmitFieldGet(typeof(Lambda), "Template");
-      cg.EmitArgGet(0);
-      cg.EmitThis();
-      cg.EmitFieldGet(typeof(Closure), "Defaults");
+      cg.EmitArgGet(0);                                 //      args,
+      cg.EmitThis();                                    //      Defaults))
+      cg.EmitFieldGet(typeof(ClosureBase), "Defaults");
       cg.EmitCall(typeof(Template), "FixArgs");
 
       cg.EmitThis();
@@ -1824,37 +1887,46 @@ public sealed class RG
       cg.ILG.EmitCalli(OpCodes.Calli, CallingConventions.Standard, typeof(object),
                        new Type[] { typeof(LocalEnvironment), typeof(object[]) }, null);
       cg.EmitReturn();
-      cg.ILG.BeginFinallyBlock();
-      oldFunc.EmitGet(cg);
+      cg.ILG.BeginFinallyBlock();                       // } finally {
+      oldFunc.EmitGet(cg);                              // Ops.CurrentFunction = oldFunc;
       cg.EmitFieldSet(typeof(Ops), "CurrentFunction");
-      cg.ILG.EndExceptionBlock();
+      oldTop.EmitGet(cg);                               // TopLevel.Current = oldTop;
+      cg.EmitFieldSet(typeof(TopLevel), "Current");
+      cg.ILG.EndExceptionBlock();                       // }
       cg.FreeLocalTemp(oldFunc);
+      cg.FreeLocalTemp(oldTop);
       cg.EmitReturn();
       cg.Finish();
+      #endregion
 
-      // Call(object[], string[], object[])
+      #region Call(object[], string[], object[])
       MethodInfo baseMethod =
         typeof(Lambda).GetMethod("Call", new Type[] { typeof(object[]), typeof(string[]), typeof(object[]) });
       cg = tg.DefineMethodOverride(baseMethod, true);
       oldFunc = cg.AllocLocalTemp(typeof(Template));
-      cg.EmitFieldGet(typeof(Ops), "CurrentFunction");
+      oldTop  = cg.AllocLocalTemp(typeof(TopLevel));
+      cg.EmitFieldGet(typeof(Ops), "CurrentFunction");  // Template oldFunc = Ops.CurrentFunction;
       oldFunc.EmitSet(cg);
+      cg.EmitFieldGet(typeof(TopLevel), "Current");     // TopLevel oldTop = TopLevel.Current;
+      oldTop.EmitSet(cg);
 
-      cg.EmitThis();
-      cg.EmitFieldGet(typeof(Lambda), "Template");
+      cg.ILG.BeginExceptionBlock();                     // try {
+      cg.EmitThis();                                    // TopLevel.Current = Template.TopLevel
+      cg.EmitFieldGet(typeof(Lambda), "Template");      // Ops.CurrentFunction = Template;
+      cg.Dup();
+      cg.EmitFieldGet(typeof(Template), "TopLevel");
+      oldTop.EmitSet(cg);
       cg.EmitFieldSet(typeof(Ops), "CurrentFunction");
 
-      cg.ILG.BeginExceptionBlock();
-      cg.EmitThis();
-      cg.EmitFieldGet(typeof(Closure), "Environment");
-
+      cg.EmitThis();                                    // return Template.FuncPtr(Environment, Template.MakeArgs(
+      cg.EmitFieldGet(typeof(ClosureBase), "Environment");
       cg.EmitThis();
       cg.EmitFieldGet(typeof(Lambda), "Template");
-      cg.EmitArgGet(0);
-      cg.EmitThis();
-      cg.EmitFieldGet(typeof(Closure), "Defaults");
-      cg.EmitArgGet(1);
-      cg.EmitArgGet(2);
+      cg.EmitArgGet(0);                                 //      Positional,
+      cg.EmitThis();                                    //      Defaults,
+      cg.EmitFieldGet(typeof(ClosureBase), "Defaults");
+      cg.EmitArgGet(1);                                 //      Keywords,
+      cg.EmitArgGet(2);                                 //      Values))
       cg.EmitCall(typeof(Template), "MakeArgs");
 
       cg.EmitThis();
@@ -1864,13 +1936,17 @@ public sealed class RG
       cg.ILG.EmitCalli(OpCodes.Calli, CallingConventions.Standard, typeof(object),
                        new Type[] { typeof(LocalEnvironment), typeof(object[]) }, null);
       cg.EmitReturn();
-      cg.ILG.BeginFinallyBlock();
-      oldFunc.EmitGet(cg);
+      cg.ILG.BeginFinallyBlock();                       // } finally {
+      oldFunc.EmitGet(cg);                              // Ops.CurrentFunction = oldFunc;
       cg.EmitFieldSet(typeof(Ops), "CurrentFunction");
-      cg.ILG.EndExceptionBlock();
+      oldTop.EmitGet(cg);                               // TopLevel.Current = oldTop;
+      cg.EmitFieldSet(typeof(TopLevel), "Current");
+      cg.ILG.EndExceptionBlock();                       // }
       cg.FreeLocalTemp(oldFunc);
+      cg.FreeLocalTemp(oldTop);
       cg.EmitReturn();
       cg.Finish();
+      #endregion
 
       ClosureType = tg.FinishType();
     }

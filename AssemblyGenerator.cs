@@ -70,6 +70,21 @@ public sealed class AssemblyGenerator
   { return new TypeGenerator(this, Module.DefineType(name, attrs, parent));
   }
 
+  public DynamicSnippet GenerateDynamicSnippet(LambdaNode body)
+  { DynamicMethod dm = new DynamicMethod("snippet", typeof(object),
+                                         new Type[] { typeof(DynamicSnippet), typeof(LocalEnvironment) },
+                                         typeof(DynamicSnippet));
+    dm.DefineParameter(1, ParameterAttributes.In, "this");
+    dm.DefineParameter(2, ParameterAttributes.In, "ENV");
+    CodeGenerator cg = new CodeGenerator(this, dm, typeof(DynamicSnippet));
+    cg.SetupNamespace(body.ClosedVars);
+    body.Body.Emit(cg);
+    Binding[] bindings = cg.GetConstantBindings();
+    object[]  constants = cg.GetConstantObjects();
+    cg.Finish();
+    return new DynamicSnippet(dm, bindings, constants);
+  }
+
   public Snippet GenerateSnippet(LambdaNode body) { return GenerateSnippet(body, "code_"+index.Next); }
   public Snippet GenerateSnippet(LambdaNode body, string typeName)
   { TypeGenerator tg = DefineType(TypeAttributes.Public|TypeAttributes.Sealed, typeName, typeof(Snippet));

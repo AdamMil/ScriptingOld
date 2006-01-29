@@ -24,10 +24,8 @@ using System;
 namespace Scripting.Backend
 {
 
-public sealed class ComplexOps
-{ ComplexOps() { }
-
-  public static object Add(Complex a, object b)
+public static class ComplexOps
+{ public static object Add(Complex a, object b)
   { if(b is Complex) return a + (Complex)b;
     switch(Convert.GetTypeCode(b))
     { case TypeCode.Byte: return a + (byte)b;

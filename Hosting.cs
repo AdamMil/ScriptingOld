@@ -31,10 +31,8 @@ namespace Scripting
 {
 
 #region Scripting
-public sealed class Scripting
-{ Scripting() { }
-
-  static Scripting()
+public static class Scripting
+{ static Scripting()
   { // a cleaner design would be to simply load all the DLLs and enumerate/register their languages.
     // the problem is that loading a bunch of possibly-unneeded assemblies at startup is slow.
     LoadLanguages(InstallationPath);
@@ -180,7 +178,9 @@ public abstract class TextFrontend
       { TopLevel.Current = new TopLevel();
         MemberContainer builtins = Options.Current.Language.Builtins;
         if(builtins!=null) builtins.Import(TopLevel.Current);
-        SnippetMaker.Generate(AST.CreateCompiled(AST.Create(node)), basename).Run(null);
+        LambdaNode body = AST.CreateCompiled(AST.Create(node));
+        if(WriteSnippets) SnippetMaker.Generate(body, basename).Run(null);
+        else SnippetMaker.GenerateDynamic(body).Run(null);
       }
       finally { if(WriteSnippets) SnippetMaker.DumpAssembly(); }
   }
@@ -197,7 +197,8 @@ public abstract class TextFrontend
       if(code==null) break;
       try
       { Node node = Options.Current.Language.Parse("<interactive>", code);
-        DisplayReturn(Compiled ? SnippetMaker.Generate(AST.CreateCompiled(node)).Run(null)
+        DisplayReturn(Compiled ? WriteSnippets ? SnippetMaker.Generate(AST.CreateCompiled(node)).Run(null)
+                                               : SnippetMaker.GenerateDynamic(AST.CreateCompiled(node)).Run(null)
                                : AST.Create(node).Evaluate());
       }
       catch(Exception e) { Output.WriteLine("ERROR: "+e.ToString()); }

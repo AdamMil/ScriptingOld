@@ -26,10 +26,8 @@ using System.Globalization;
 namespace Scripting.Backend
 {
 
-public sealed class IntegerOps
-{ IntegerOps() { }
-
-  public static object Add(Integer a, object b)
+public static class IntegerOps
+{ public static object Add(Integer a, object b)
   { Integer ret;
     switch(Convert.GetTypeCode(b))
     { case TypeCode.Byte: ret = a + (byte)b; break;
