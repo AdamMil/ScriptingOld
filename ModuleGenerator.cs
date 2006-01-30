@@ -30,7 +30,7 @@ namespace Scripting.Backend
 
 public abstract class BuiltinModule : CodeModule
 { public BuiltinModule(TopLevel top, Type type) : base(type.FullName, top)
-  { ReflectedType.FromType(type, false).Import(TopLevel, true);
+  { ReflectedType.FromType(type, false).Export(TopLevel, true);
   }
 }
 
@@ -85,6 +85,12 @@ public static class ModuleGenerator
   public static MemberContainer Generate(Type type)
   { object[] attrs = type.GetCustomAttributes(typeof(ScriptCodeAttribute), false);
     if(attrs.Length==0) return ReflectedType.FromType(type, false);
+    else
+    { Language lang = ((ScriptCodeAttribute)attrs[0]).Language;
+      foreach(ScriptCodeAttribute sc in attrs)
+        if(sc.Language!=lang) throw new NotSupportedException("Cannot mix languages in a single module.");
+    }
+
     Array.Sort(attrs, CodeAttrComparer.Instance);
 
     // TODO: provide some versioning support (eg, add the assembly's full name to the filename somehow)
@@ -107,14 +113,16 @@ public static class ModuleGenerator
     try
     { TopLevel.Current = new TopLevel();
       Options.Save();
-      bool addBuiltins = Options.Current.Language.ShouldAddBuiltins(type); // FIXME: figure out how to handle Language changing at runtime
+
+      Options.Current.Language = ((ScriptCodeAttribute)attrs[0]).Language;
+      bool addBuiltins = Options.Current.Language.ShouldAddBuiltins(type);
 
       Options.Current.Debug = Options.Current.DebugModules;
       Options.Current.Optimize = OptimizeType.Speed;
       Options.Current.IsPreCompilation = false;
 
-      if(addBuiltins) Options.Current.Language.Builtins.Import(TopLevel.Current); // TODO: affected by above FIXME
-      ReflectedType.FromType(type, false).Import(TopLevel.Current);
+      if(addBuiltins) Options.Current.Language.Builtins.Export(TopLevel.Current); // TODO: affected by above FIXME
+      ReflectedType.FromType(type, false).Export(TopLevel.Current);
 
       TypeGenerator tg = ag.DefineType("ScriptModule", typeof(BuiltinModule));
       CodeGenerator cg;
@@ -132,7 +140,7 @@ public static class ModuleGenerator
       { cg.EmitLanguage(Options.Current.Language);
         cg.EmitPropGet(typeof(Language), "Builtins");
         topSlot.EmitGet(cg);
-        cg.EmitCall(typeof(MemberContainer), "Import", typeof(TopLevel));
+        cg.EmitCall(typeof(MemberContainer), "Export", typeof(TopLevel));
       }
       topSlot.EmitGet(cg);
       cg.EmitFieldSet(typeof(TopLevel), "Current");
@@ -265,7 +273,7 @@ public static class ModuleGenerator
     try
     { TopLevel.Current = new TopLevel();
       MemberContainer builtins = Options.Current.Language.Builtins;
-      if(builtins!=null) builtins.Import(TopLevel.Current);
+      if(builtins!=null) builtins.Export(TopLevel.Current);
 
       AssemblyGenerator ag = new AssemblyGenerator(moduleName, filename);
       TypeGenerator tg = ag.DefineType(TypeAttributes.Public|TypeAttributes.Sealed, typeName, typeof(CodeModule));
@@ -292,7 +300,7 @@ public static class ModuleGenerator
       { cg.EmitLanguage(Options.Current.Language);
         cg.EmitPropGet(typeof(Language), "Builtins");
         topSlot.EmitGet(cg);
-        cg.EmitCall(typeof(MemberContainer), "Import", typeof(TopLevel));
+        cg.EmitCall(typeof(MemberContainer), "Export", typeof(TopLevel));
       }
       #endregion
 

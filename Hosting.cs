@@ -177,7 +177,7 @@ public abstract class TextFrontend
       try
       { TopLevel.Current = new TopLevel();
         MemberContainer builtins = Options.Current.Language.Builtins;
-        if(builtins!=null) builtins.Import(TopLevel.Current);
+        if(builtins!=null) builtins.Export(TopLevel.Current);
         LambdaNode body = AST.CreateCompiled(AST.Create(node));
         if(WriteSnippets) SnippetMaker.Generate(body, basename).Run(null);
         else SnippetMaker.GenerateDynamic(body).Run(null);
@@ -190,7 +190,7 @@ public abstract class TextFrontend
   protected void DoInteractive()
   { TopLevel.Current = new TopLevel();
     MemberContainer builtins = Options.Current.Language.Builtins;
-    if(builtins!=null) builtins.Import(TopLevel.Current);
+    if(builtins!=null) builtins.Export(TopLevel.Current);
 
     while(true)
     { string code = GetSnippet();

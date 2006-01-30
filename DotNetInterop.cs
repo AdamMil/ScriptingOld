@@ -1052,8 +1052,8 @@ public sealed class ReflectedNamespace : MemberContainer
   public override bool GetSlot(object instance, string name, out object ret) { return dict.TryGetValue(name, out ret); }
   public override ICollection<string> GetMemberNames(bool includeImports) { return dict.Keys; }
 
-  public override void Import(TopLevel top, string[] names, string[] asNames)
-  { Importer.Import(top, dict, null, names, asNames, "namespace '"+name+"'");
+  public override void Export(TopLevel top, string[] names, string[] asNames)
+  { Importer.Import(top, dict, this, null, names, asNames, "namespace '"+name+"'");
   }
 
   public override bool TryDeleteSlot(object instance, string name) { return false; }
@@ -1176,19 +1176,12 @@ public sealed class ReflectedType : MemberContainer, IProcedure
     return Constructor.Call(args);
   }
 
-  public override bool GetSlot(object instance, string name, out object ret)
-  { if(dict==null) Initialize();
-    return dict.TryGetValue(name, out ret);
-  }
+  public override bool GetSlot(object instance, string name, out object ret) { return Dict.TryGetValue(name, out ret); }
+  public override ICollection<string> GetMemberNames(bool includeImports) { return Dict.Keys; }
 
-  public override ICollection<string> GetMemberNames(bool includeImports)
-  { if(dict==null) Initialize();
-    return dict.Keys;
-  }
-
-  public void Import(TopLevel top, bool impersonateLocal) { Import(top, null, null, impersonateLocal); }
-  public override void Import(TopLevel top, string[] names, string[] asNames) { Import(top, names, asNames, false); }
-  public void Import(TopLevel top, string[] names, string[] asNames, bool impersonateLocal)
+  public void Export(TopLevel top, bool impersonateLocal) { Export(top, null, null, impersonateLocal); }
+  public override void Export(TopLevel top, string[] names, string[] asNames) { Export(top, names, asNames, false); }
+  public void Export(TopLevel top, string[] names, string[] asNames, bool impersonateLocal)
   { Dictionary<string,object> temp;
     if(dict==null) Initialize();
     if(names==null)
@@ -1211,7 +1204,8 @@ public sealed class ReflectedType : MemberContainer, IProcedure
       }
     }
 
-    Importer.Import(top, temp, impersonateLocal ? top : null, null, null, "type '"+Ops.TypeName(Type)+"'");
+    Importer.Import(top, temp, impersonateLocal ? top : (MemberContainer)this, null, null, null,
+                    "type '"+Ops.TypeName(Type)+"'");
   }
 
   public bool IsInstance(object obj)

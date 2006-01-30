@@ -296,10 +296,10 @@ public sealed class TypeGenerator
     if(type.IsValueType) type=typeof(object);
     FieldBuilder fb = TypeBuilder.DefineField("c$"+numConstants++, type,
                                               FieldAttributes.Static|FieldAttributes.Private|FieldAttributes.InitOnly);
-    EmitConstantInitializer(value);
-    initGen.EmitFieldSet(fb);
     Slot slot = new StaticSlot(fb);
     constantSlots.Add(slot);
+    EmitConstantInitializer(value);
+    initGen.EmitFieldSet(fb);
     return slot;
   }
 
