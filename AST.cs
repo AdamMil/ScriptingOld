@@ -934,9 +934,6 @@ public abstract class Language
   }
   #endregion
 
-  // FIXME: i don't think this works well when a library written in one language is imported into script written in another language
-  public virtual bool ExcludeFromImport(string name) { return false; }
-
   public virtual string GenerateName(Node within, string baseName)
   { if(baseName==null || baseName=="") baseName = "g";
     return "#<" + baseName + GenNames.Next.ToString() + ">";
@@ -1078,7 +1075,7 @@ public abstract class Language
     finally { sr.Close(); }
   }
 
-  public virtual bool ShouldAddBuiltins(Type type) { return true; }
+  public virtual bool ShouldAddBuiltins(Type type) { return false; }
 
   public virtual string Str(object obj)
   { TypeCode tc = Convert.GetTypeCode(obj);

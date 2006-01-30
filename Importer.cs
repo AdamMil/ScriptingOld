@@ -31,17 +31,24 @@ namespace Scripting
 public static class Importer
 { static Importer() { SearchPaths.Add("."); }
 
-  public static void Import(TopLevel top, Dictionary<string,object> dict, TopLevel env,
-                            string[] names, string[] asNames, string myName)
+  public static void Import(TopLevel top, Dictionary<string,object> dict, MemberContainer from,
+                            MemberContainer.ExportInfo ei, string[] names, string[] asNames, string myName)
   { if(names==null)
-      foreach(KeyValuePair<string,object> de in dict) top.Globals.Bind(de.Key, de.Value, env);
+      foreach(KeyValuePair<string,object> de in dict)
+      { string name = ei==null ? de.Key : ei.GetExternalName(de.Key);
+        if(name!=null) top.Globals.Bind(name, de.Value, from);
+      }
     else
+    { if(asNames==null) asNames = names;
       for(int i=0; i<names.Length; i++)
       { object obj;
-        if(!dict.TryGetValue(names[i], out obj))
-          throw new ArgumentException(myName+" does not contain a member called '"+names[i]+"'");
-        top.Globals.Set(asNames[i], obj, env);
+        string name = ei==null ? names[i] : ei.GetInternalName(names[i]);
+        if(!dict.TryGetValue(name, out obj))
+          throw new ArgumentException(myName+" does not contain a member called '"+names[i]+
+                                      (name!=names[i] ? "' (renamed from '"+names[i]+"')" : "'"));
+        top.Globals.Set(asNames[i], obj, from);
       }
+    }
   }
 
   public static MemberContainer Load(string name) { return Load(name, true, false); }

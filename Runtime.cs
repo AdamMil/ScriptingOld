@@ -56,15 +56,15 @@ public interface IProperty
 
 #region Binding
 public sealed class Binding
-{ public Binding(string name, TopLevel env) { Value=Unbound; Name=name; Environment=env; }
-  public Binding(string name, object value, TopLevel env) { Value=value; Name=name; Environment=env; }
+{ public Binding(string name, MemberContainer from) { Value=Unbound; Name=name; From=from; }
+  public Binding(string name, object value, MemberContainer from) { Value=value; Name=name; From=from; }
 
   public override bool Equals(object obj) { return this==obj; }
   public override int GetHashCode() { return Name.GetHashCode(); }
 
   public object Value;
   public string Name;
-  public TopLevel Environment;
+  public MemberContainer From;
 
   public readonly static object Unbound = new Singleton("<UNBOUND>");
 }
@@ -79,10 +79,10 @@ public sealed class BindingSpace
     bind.Value = value;
   }
 
-  public void Bind(string name, object value, TopLevel env)
+  public void Bind(string name, object value, MemberContainer from)
   { Binding bind;
     lock(Dict)
-      if(!Dict.TryGetValue(name, out bind) || bind.Environment!=env) Dict[name] = bind = new Binding(name, env);
+      if(!Dict.TryGetValue(name, out bind) || bind.From!=from) Dict[name] = bind = new Binding(name, from);
     bind.Value = value;
   }
 
@@ -106,17 +106,17 @@ public sealed class BindingSpace
     return true;
   }
 
-  public Binding GetBinding(string name, TopLevel env)
+  public Binding GetBinding(string name, MemberContainer from)
   { Binding bind;
-    lock(Dict) if(!Dict.TryGetValue(name, out bind)) Dict[name] = bind = new Binding(name, env);
+    lock(Dict) if(!Dict.TryGetValue(name, out bind)) Dict[name] = bind = new Binding(name, from);
     return bind;
   }
 
-  public void Set(string name, object value, TopLevel env)
+  public void Set(string name, object value, MemberContainer from)
   { Binding bind;
     lock(Dict)
-      if(Dict.TryGetValue(name, out bind)) bind.Environment = env;
-      else Dict[name] = bind = new Binding(name, env);
+      if(Dict.TryGetValue(name, out bind)) bind.From = from;
+      else Dict[name] = bind = new Binding(name, from);
     bind.Value = value;
   }
 
@@ -165,24 +165,94 @@ public sealed class LocalEnvironment
 #endregion
 
 #region TopLevel
-public sealed class TopLevel
-{ public void AddMacro(string name, IProcedure value) { Macros.Set(name, value, this); }
+public sealed class TopLevel : MemberContainer
+{ 
+  #region MemberContainer
+  public override ICollection<string> GetMemberNames(bool includeImports)
+  { if(includeImports) return Globals.Dict.Keys;
+    else
+    { List<string> list = new List<string>();
+      foreach(KeyValuePair<string,Binding> de in Globals.Dict) if(de.Value.From==this) list.Add(de.Key);
+      return list;
+    }
+  }
+
+  public override bool GetSlot(object instance, string name, out object ret) { return Globals.Get(name, out ret); }
+
+  public override void Export(TopLevel top, string[] names, string[] asNames)
+  { ExportInfo ei = new ExportInfo(this);
+
+    if(names==null)
+    { foreach(KeyValuePair<string,Binding> de in Globals.Dict)
+      { string exportName = ei.GetExternalName(de.Key);
+        if(exportName!=null) top.Globals.Bind(exportName, de.Value.Value, de.Value.From);
+      }
+      if(Macros!=null)
+      { if(top.Macros==null) top.Macros = new BindingSpace();
+        foreach(KeyValuePair<string,Binding> de in Macros.Dict)
+        { string exportName = ei.GetExternalName(de.Key);
+          if(exportName!=null) top.Macros.Bind(exportName, de.Value.Value, de.Value.From);
+        }
+      }
+    }
+    else
+    { if(asNames==null) asNames = names;
+
+      for(int i=0; i<names.Length; i++)
+      { string name = ei.GetInternalName(names[i]);
+        Binding bind;
+        bool found = false;
+        if(name!=null)
+        { if(Macros.Dict.TryGetValue(name, out bind))
+          { top.Macros.Bind(asNames[i], bind.Value, bind.From);
+            found = true;
+          }
+          if(Globals.Dict.TryGetValue(name, out bind))
+          { top.Globals.Bind(asNames[i], bind.Value, bind.From);
+            found = true;
+          }
+        }
+        if(!found) throw new ArgumentException("TopLevel does not contain a member called '"+name+
+                                               (name!=names[i] ? "' (renamed from '"+names[i]+"')" : "'"));
+      }
+    }
+  }
+
+  public override bool TryDeleteSlot(object instance, string name)
+  { Globals.Unbind(name);
+    return true;
+  }
+
+  public override bool TrySetSlot(object instance, string name, object value)
+  { Globals.Set(name, value, this);
+    return true;
+  }
+  #endregion
+
+  public void AddMacro(string name, IProcedure value)
+  { if(Macros==null) Macros = new BindingSpace();
+    Macros.Set(name, value, this);
+  }
 
   public void Alter(string name, object value) { Globals.Alter(name, value); }
   public void Bind(string name, object value) { Globals.Bind(name, value, this); }
 
-  public bool Contains(string name) { return Globals.Contains(name); }
-  public bool ContainsMacro(string name) { return Macros.Contains(name); }
+  public new bool Contains(string name) { return Globals.Contains(name); }
+  public bool ContainsMacro(string name) { return Macros!=null && Macros.Contains(name); }
 
   public object Get(string name) { return Globals.Get(name); }
   public bool Get(string name, out object value) { return Globals.Get(name, out value); }
   public Binding GetBinding(string name) { return Globals.GetBinding(name, this); }
-  public IProcedure GetMacro(string name) { return (IProcedure)Macros.Get(name); }
+
+  public IProcedure GetMacro(string name)
+  { if(Macros==null) throw UndefinedVariableException.FromName(name);
+    return (IProcedure)Macros.Get(name);
+  }
 
   public void Set(string name, object value) { Globals.Set(name, value, this); }
   public void Unbind(string name) { Globals.Unbind(name); }
 
-  public BindingSpace Globals=new BindingSpace(), Macros=new BindingSpace();
+  public BindingSpace Globals=new BindingSpace(), Macros;
 
   [ThreadStatic] public static TopLevel Current;
 }
@@ -191,7 +261,81 @@ public sealed class TopLevel
 
 #region MemberContainer
 public abstract class MemberContainer
-{ public sealed class SlotAccessor : IProcedure
+{ 
+  #region ExportInfo
+  public sealed class ExportInfo
+  { public ExportInfo() { noMapping = true; }
+
+    public ExportInfo(TopLevel top) : this(top, null, null) { }
+    public ExportInfo(TopLevel top, string[] names) : this(top, names, null) { }
+    public ExportInfo(TopLevel top, string[] names, string[] asNames)
+    { if(names==null)
+      { map = new Dictionary<string,string>();
+        foreach(KeyValuePair<string,Binding> de in top.Globals.Dict) if(de.Value.From==top) map[de.Key] = de.Key;
+        if(top.Macros!=null)
+          foreach(KeyValuePair<string,Binding> de in top.Macros.Dict) if(de.Value.From==top) map[de.Key] = de.Key;
+        noMapping = true;
+      }
+      else
+      { map = new Dictionary<string,string>(names.Length);
+        if(asNames==null) { noMapping=true; asNames=names; }
+        for(int i=0; i<names.Length; i++)
+        { if(!top.Globals.Contains(names[i]) && (top.Macros==null || !top.Macros.Contains(names[i])))
+            throw new ArgumentException("Export name '"+names[i]+"' not found");
+          map[names[i]] = asNames[i];
+        }
+      }
+    }
+
+    public ExportInfo(MemberContainer mc) : this(mc, null, null) { }
+    public ExportInfo(MemberContainer mc, string[] names) : this(mc, names, null) { }
+    public ExportInfo(MemberContainer mc, string[] names, string[] asNames)
+    { if(names==null)
+      { ICollection<string> mcNames = mc.GetMemberNames(false);
+        map = new Dictionary<string,string>(mcNames.Count);
+        foreach(string name in mcNames) map[name] = name;
+        noMapping = true;
+      }
+      else
+      { if(asNames==null) { noMapping=true; asNames=names; }
+        map = new Dictionary<string,string>(names.Length);
+        for(int i=0; i<names.Length; i++)
+        { if(!mc.Contains(names[i])) throw new ArgumentException("Export name '"+names[i]+"' not found");
+          map[names[i]] = asNames[i];
+        }
+      }
+    }
+
+    public string GetInternalName(string name)
+    { if(map==null) return name[0]=='_' ? null : name;
+      if(noMapping) return map.ContainsKey(name) ? name : null;
+      if(reverseMap==null)
+      { reverseMap = new Dictionary<string,string>(map.Count);
+        foreach(KeyValuePair<string,string> de in map) reverseMap[de.Value] = de.Key;
+      }
+      reverseMap.TryGetValue(name, out name);
+      return name;
+    }
+
+    public string GetExternalName(string name)
+    { return map==null ? name[0]=='_' ? null : name : map.TryGetValue(name, out name) ? name : null;
+    }
+
+    public bool GetExternalName(string name, out string exportName)
+    { if(map!=null) return map.TryGetValue(name, out exportName);
+      else if(name[0]=='_') { exportName=null; return false; }
+      else { exportName=name; return true; }
+    }
+    
+    public static readonly ExportInfo Simple = new ExportInfo();
+
+    Dictionary<string,string> map, reverseMap;
+    bool noMapping;
+  }
+  #endregion
+
+  #region SlotAccessor
+  public sealed class SlotAccessor : IProcedure
   { public SlotAccessor(string member) { Member = member; }
 
     public int MinArgs { get { return 1; } }
@@ -206,6 +350,12 @@ public abstract class MemberContainer
 
     public readonly string Member;
   }
+  #endregion
+
+  public bool Contains(string name)
+  { object dummy;
+    return GetSlot(null, name, out dummy);
+  }
 
   public void DeleteSlot(object instance, string name)
   { if(!TryDeleteSlot(instance, name))
@@ -213,6 +363,10 @@ public abstract class MemberContainer
                                    string.Format("can't delete attribute '{0}' on '{1}'", name, Ops.TypeName(instance)));
   }
   public abstract bool TryDeleteSlot(object instance, string name);
+
+  public void Export(TopLevel top) { Export(top, null, null); }
+  public void Export(TopLevel top, string[] names) { Export(top, names, names); }
+  public abstract void Export(TopLevel top, string[] names, string[] asNames);
 
   public ICollection<string> GetMemberNames() { return GetMemberNames(false); }
   public abstract ICollection<string> GetMemberNames(bool includeImports);
@@ -327,10 +481,6 @@ public abstract class MemberContainer
     }
     return TrySetSlot(instance, name, value);
   }
-
-  public void Import(TopLevel top) { Import(top, null, null); }
-  public void Import(TopLevel top, string[] names) { Import(top, names, names); }
-  public abstract void Import(TopLevel top, string[] names, string[] asNames);
 
   public static MemberContainer FromObject(object obj)
   { MemberContainer mc = obj as MemberContainer;
@@ -1502,8 +1652,8 @@ public sealed class Cast : MemberContainer
   { return ReflectedType.GetMemberNames(includeImports);
   }
 
-  public override void Import(TopLevel top, string[] names, string[] asNames)
-  { ReflectedType.Import(top, names, asNames);
+  public override void Export(TopLevel top, string[] names, string[] asNames)
+  { ReflectedType.Export(top, names, asNames);
   }
 
   public override bool TryDeleteSlot(object instance, string name)
@@ -1547,30 +1697,11 @@ public class CodeModule : MemberContainer
 
     List<string> ret = new List<string>();
     foreach(KeyValuePair<string,Binding> de in TopLevel.Globals.Dict)
-      if(de.Value.Environment==TopLevel) ret.Add(de.Key);
+      if(de.Value.From==TopLevel) ret.Add(de.Key);
     return ret;
   }
 
-  public override void Import(TopLevel top, string[] names, string[] asNames)
-  { if(names==null)
-    { Import(top.Globals, TopLevel.Globals, TopLevel);
-      Import(top.Macros, TopLevel.Macros, TopLevel);
-    }
-    else
-      for(int i=0; i<names.Length; i++)
-      { object ret;
-        bool found = false;
-        if(TopLevel.Globals.Get(names[i], out ret))
-        { top.Globals.Bind(asNames[i], ret, TopLevel);
-          found = true;
-        }
-        if(TopLevel.Macros.Get(names[i], out ret))
-        { top.Macros.Bind(asNames[i], ret, TopLevel);
-          found = true;
-        }
-        if(!found) throw new ArgumentException("'"+names[i]+"' not found in module "+Name);
-      }
-  }
+  public override void Export(TopLevel top, string[] names, string[] asNames) { TopLevel.Export(top, names, asNames); }
 
   public override bool TryDeleteSlot(object instance, string name) { TopLevel.Globals.Unbind(name); return true; }
 
@@ -1583,12 +1714,6 @@ public class CodeModule : MemberContainer
 
   public readonly TopLevel TopLevel;
   public readonly string Name;
-
-  static void Import(BindingSpace to, BindingSpace from, TopLevel env)
-  { Language lang = Ops.GetCurrentLanguage();
-    foreach(KeyValuePair<string,Binding> de in from.Dict)
-      if(!lang.ExcludeFromImport(de.Key) && de.Value.Environment==env) to.Bind(de.Key, de.Value.Value, env);
-  }
 }
 #endregion
 
