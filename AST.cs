@@ -2345,8 +2345,15 @@ public sealed class GeneratorNode : Node
   public override void Emit(CodeGenerator cg, ref Type etype)
   { if(etype!=typeof(void))
     { cg.MarkPosition(this);
-      cg.EmitArgGet(0); // get local environment
-      cg.EmitNew(MakeGenerator(cg));
+      if(!cg.IsDynamicMethod)
+      { cg.EmitArgGet(0);
+        cg.EmitNew(MakeGenerator(cg));
+      }
+      else
+      { cg.EmitConstantObject(MakeDynamicGenerator(cg));
+        cg.EmitArgGet(0);
+        cg.EmitCall(typeof(DynamicMethodGenerator), "Clone");
+      }
       etype = typeof(Generator);
     }
     TailReturn(cg);
@@ -2372,42 +2379,62 @@ public sealed class GeneratorNode : Node
   public YieldNode[] Yields;
   public Label TrueLabel;
   
+  DynamicMethodGenerator MakeDynamicGenerator(CodeGenerator cg)
+  { DynamicMethod dm = new DynamicMethod("generator$"+index.Next, typeof(bool),
+                                         new Type[] { typeof(DynamicMethodGenerator), typeof(LocalEnvironment) },
+                                         typeof(DynamicMethodGenerator));
+    dm.DefineParameter(1, ParameterAttributes.In, "ENV");
+    CodeGenerator ncg = new CodeGenerator(cg.AssemblyGenerator, dm, typeof(DynamicMethodGenerator));
+    FieldInfo fi = typeof(DynamicMethodGenerator).GetField("nsData", BindingFlags.Instance|BindingFlags.NonPublic);
+    ncg.Namespace = new ArrayNamespace(cg.Namespace, ncg,
+                                       new FieldSlot(new ThisSlot(typeof(DynamicMethodGenerator)), fi));
+    EmitMoveNextBody(ncg);
+    DynamicMethodGenerator dmg = new DynamicMethodGenerator(dm, ncg.GetConstantBindings(), ncg.GetConstantObjects(),
+                                                            ((ArrayNamespace)ncg.Namespace).ArraySize);
+    ncg.Finish();
+    return dmg;
+  }
+
   ConstructorInfo MakeGenerator(CodeGenerator cg)
   { TypeGenerator tg = cg.IsDynamicMethod
       ? cg.AssemblyGenerator.DefineType(TypeAttributes.Sealed, "generator$"+index.Next, typeof(Generator))
       : cg.TypeGenerator.DefineNestedType(TypeAttributes.Sealed, "generator$"+index.Next, typeof(Generator));
 
     CodeGenerator ncg = tg.DefineMethodOverride("InnerNext");
-    ncg.IsGenerator = true;
     ncg.Namespace = new FieldNamespace(cg.Namespace, "_", ncg, new ThisSlot(tg.TypeBuilder));
-
-    bool hasTry = false;
-    foreach(YieldNode yn in Yields)
-    { if(yn.Targets.Length!=1) hasTry = true;
-      for(int i=0; i<yn.Targets.Length; i++) yn.Targets[i].Label = ncg.ILG.DefineLabel();
-    }
-
-    Label[] jumps = new Label[Yields.Length];
-    for(int i=0; i<Yields.Length; i++) jumps[i] = Yields[i].Targets[0].Label;
-    ncg.EmitThis();
-    ncg.EmitFieldGet(typeof(Generator).GetField("jump", BindingFlags.Instance|BindingFlags.NonPublic));
-    ncg.ILG.Emit(OpCodes.Switch, jumps);
-
-    if(hasTry) TrueLabel = ncg.ILG.DefineLabel();
-    Body.EmitVoid(ncg);
-    ncg.EmitBool(false);
-    ncg.EmitReturn();
-    if(hasTry)
-    { ncg.ILG.MarkLabel(TrueLabel);
-      ncg.EmitBool(true);
-      ncg.EmitReturn();
-    }
+    EmitMoveNextBody(ncg);
     ncg.Finish();
 
     ncg = tg.DefineChainedConstructor(typeof(LocalEnvironment));
     ncg.EmitReturn();
     ncg.Finish();
     return (ConstructorInfo)ncg.MethodBase;
+  }
+
+  void EmitMoveNextBody(CodeGenerator cg)
+  { cg.IsGenerator = true;
+
+    bool hasTry = false;
+    foreach(YieldNode yn in Yields)
+    { if(yn.Targets.Length!=1) hasTry = true;
+      for(int i=0; i<yn.Targets.Length; i++) yn.Targets[i].Label = cg.ILG.DefineLabel();
+    }
+
+    Label[] jumps = new Label[Yields.Length];
+    for(int i=0; i<Yields.Length; i++) jumps[i] = Yields[i].Targets[0].Label;
+    cg.EmitThis();
+    cg.EmitFieldGet(typeof(Generator).GetField("jump", BindingFlags.Instance|BindingFlags.NonPublic));
+    cg.ILG.Emit(OpCodes.Switch, jumps);
+
+    if(hasTry) TrueLabel = cg.ILG.DefineLabel();
+    Body.EmitVoid(cg);
+    cg.EmitBool(false);
+    cg.EmitReturn();
+    if(hasTry)
+    { cg.ILG.MarkLabel(TrueLabel);
+      cg.EmitBool(true);
+      cg.EmitReturn();
+    }
   }
 
   static Index index = new Index();

@@ -46,50 +46,26 @@ public abstract class Slot
 }
 #endregion
 
-#region ArgSlot
-public sealed class ArgSlot : Slot
-{ public ArgSlot(MethodBuilder mb, int index, string name) : this(mb, index, name, typeof(object)) { }
-  public ArgSlot(MethodBuilder mb, int index, string name, Type type)
-    : this(mb, mb.DefineParameter(index+1, ParameterAttributes.None, name), type) { }
-  public ArgSlot(MethodBase mb, ParameterBuilder parameterBuilder, Type type)
-  { builder   = parameterBuilder;
-    isStatic  = mb.IsStatic;
-    this.type = type;
-  }
-
-  public override Type Type { get { return type; } }
-
-  public override void EmitGet(CodeGenerator cg) { cg.EmitArgGet(builder.Position-1); }
-  public override void EmitGetAddr(CodeGenerator cg) { cg.EmitArgGetAddr(builder.Position-1); }
-  public override void EmitSet(CodeGenerator cg) { cg.EmitArgSet(builder.Position-1); }
-
-  ParameterBuilder builder;
-  Type type;
-  bool isStatic;
-}
-#endregion
-
 // TODO: eliminate the requirement to cast typed names on every retrieval
-#region EnvironmentSlot
-public sealed class EnvironmentSlot : Slot
-{ public EnvironmentSlot(Name name) : this(name.Depth, name.Index, name.Type) { }
-  public EnvironmentSlot(int depth, int index, Type type) { Depth=depth; Index=index; SlotType=type; }
-
-  public override Type Type { get { return SlotType; } }
+// TODO: support non-object arrays
+#region ArraySlotBase
+public abstract class ArraySlotBase : Slot
+{ public ArraySlotBase(int index) { Index = index; }
 
   public override void EmitGet(CodeGenerator cg)
   { GetArray(cg);
     cg.EmitInt(Index);
     cg.ILG.Emit(OpCodes.Ldelem_Ref);
-    if(SlotType.IsValueType)
-    { cg.ILG.Emit(OpCodes.Unbox, SlotType);
-      if(SlotType.IsPrimitive || SlotType.IsPointer) cg.ILG.Emit(OpCodes.Ldobj, SlotType);
+    Type type = Type;
+    if(type.IsValueType)
+    { cg.ILG.Emit(OpCodes.Unbox, type);
+      if(type.IsPrimitive || type.IsPointer) cg.ILG.Emit(OpCodes.Ldobj, type);
     }
-    else if(SlotType!=typeof(object)) cg.ILG.Emit(OpCodes.Castclass, SlotType);
+    else if(type!=typeof(object)) cg.ILG.Emit(OpCodes.Castclass, type);
   }
 
   public override void EmitGetAddr(CodeGenerator cg)
-  { if(SlotType!=typeof(object))
+  { if(Type!=typeof(object))
       throw new NotImplementedException("Getting the address of a non-Object variable is not supported");
     GetArray(cg);
     cg.EmitInt(Index);
@@ -122,7 +98,55 @@ public sealed class EnvironmentSlot : Slot
     }
   }
 
-  void GetArray(CodeGenerator cg)
+  protected abstract void GetArray(CodeGenerator cg);
+
+  protected int Index;
+}
+#endregion
+
+#region ArraySlot
+public sealed class ArraySlot : ArraySlotBase
+{ public ArraySlot(Slot arraySlot, int index, Type type) : base(index) { Array=arraySlot; SlotType=type; }
+
+  public override Type Type { get { return SlotType; } }
+  protected override void GetArray(CodeGenerator cg) { Array.EmitGet(cg); }
+
+  Slot Array;
+  Type SlotType;
+}
+#endregion
+
+#region ArgSlot
+public sealed class ArgSlot : Slot
+{ public ArgSlot(MethodBuilder mb, int index, string name) : this(mb, index, name, typeof(object)) { }
+  public ArgSlot(MethodBuilder mb, int index, string name, Type type)
+    : this(mb, mb.DefineParameter(index+1, ParameterAttributes.None, name), type) { }
+  public ArgSlot(MethodBase mb, ParameterBuilder parameterBuilder, Type type)
+  { builder   = parameterBuilder;
+    isStatic  = mb.IsStatic;
+    this.type = type;
+  }
+
+  public override Type Type { get { return type; } }
+
+  public override void EmitGet(CodeGenerator cg) { cg.EmitArgGet(builder.Position-1); }
+  public override void EmitGetAddr(CodeGenerator cg) { cg.EmitArgGetAddr(builder.Position-1); }
+  public override void EmitSet(CodeGenerator cg) { cg.EmitArgSet(builder.Position-1); }
+
+  ParameterBuilder builder;
+  Type type;
+  bool isStatic;
+}
+#endregion
+
+#region EnvironmentSlot
+public sealed class EnvironmentSlot : ArraySlotBase
+{ public EnvironmentSlot(Name name) : this(name.Depth, name.Index, name.Type) { }
+  public EnvironmentSlot(int depth, int index, Type type) : base(index) { Depth=depth; SlotType=type; }
+
+  public override Type Type { get { return SlotType; } }
+
+  protected override void GetArray(CodeGenerator cg)
   { if(Depth==0) cg.EmitArgGet(1);
     else
     { cg.EmitArgGet(0);
@@ -132,7 +156,7 @@ public sealed class EnvironmentSlot : Slot
   }
 
   Type SlotType;
-  int Index, Depth;
+  int Depth;
 }
 #endregion
 
