@@ -81,12 +81,23 @@ public abstract class Namespace
   }
 
   protected virtual Slot MakeSlot(Name name)
-  { if(name.Depth==Name.Local) return codeGen.AllocLocalTemp(name.Type, true);
-    throw new NotImplementedException("unhandled name depth");
+  { return name.Depth==Name.Local ? codeGen.AllocLocalTemp(name.Type, true) : new EnvironmentSlot(name);
   }
 
   protected Dictionary<Name,Slot> slots = new Dictionary<Name,Slot>();
   protected CodeGenerator codeGen;
+}
+#endregion
+
+#region ArrayNamespace
+public sealed class ArrayNamespace : Namespace
+{ public ArrayNamespace(Namespace parent, CodeGenerator cg, Slot arraySlot) : base(parent, cg) { Array = arraySlot; }
+
+  public int ArraySize { get { return index; } }
+  public override Slot AllocTemp(Type type) { return new ArraySlot(Array, index++, type); }
+
+  readonly Slot Array;
+  int index;
 }
 #endregion
 
@@ -103,10 +114,6 @@ public sealed class FieldNamespace : Namespace
   public readonly string Prefix;
   public readonly Slot Instance;
 
-  protected override Slot MakeSlot(Name name)
-  { return name.Depth==Name.Local ? base.MakeSlot(name) : new EnvironmentSlot(name);
-  }
-
   static Index index = new Index();
 }
 #endregion
@@ -114,10 +121,6 @@ public sealed class FieldNamespace : Namespace
 #region LocalNamespace
 public sealed class LocalNamespace : Namespace
 { public LocalNamespace(Namespace parent, CodeGenerator cg) : base(parent, cg) { }
-
-  protected override Slot MakeSlot(Name name)
-  { return name.Depth==Name.Local ? base.MakeSlot(name) : new EnvironmentSlot(name);
-  }
 }
 #endregion
 
@@ -142,7 +145,7 @@ public sealed class TopLevelNamespace : Namespace
 
   protected override Slot MakeSlot(Name name)
   { if(name.Depth!=Name.Global) return base.MakeSlot(name);
-    if(name.Type!=typeof(object)) throw new NotSupportedException("Global variables must be of type System.Object");
+    if(name.Type!=typeof(object)) throw new NotSupportedException("Global variables must be of type System.Object"); // TODO: can we relax this?
     return new NamedFrameSlot(TopSlot, name.String);
   }
 }

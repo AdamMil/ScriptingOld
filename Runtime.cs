@@ -1717,9 +1717,34 @@ public class CodeModule : MemberContainer
 }
 #endregion
 
+#region DynamicMethodGenerator
+public sealed class DynamicMethodGenerator : Generator
+{ public DynamicMethodGenerator(DynamicMethod dm, Binding[] bindings, object[] constants, int dataSize)
+  { method=dm; Bindings=bindings; Constants=constants; nsData = dataSize==0 ? null : new object[dataSize];
+  }
+
+  public delegate bool MoveNextDelegate(LocalEnvironment env);
+
+  public DynamicMethodGenerator Clone(LocalEnvironment env)
+  { DynamicMethodGenerator dmg = (DynamicMethodGenerator)MemberwiseClone();
+    dmg.environment = env;
+    dmg.nextProc  = (MoveNextDelegate)method.CreateDelegate(typeof(MoveNextDelegate), dmg);
+    return dmg;
+  }
+
+  protected override bool InnerNext(LocalEnvironment env) { return nextProc(env); }
+
+  readonly Binding[] Bindings;
+  readonly object[] Constants, nsData;
+  readonly DynamicMethod method;
+  MoveNextDelegate nextProc;
+}
+#endregion
+
 #region Generator
 public abstract class Generator : IEnumerator
-{ protected Generator(LocalEnvironment env) { environment=env; jump=uint.MaxValue; }
+{ protected Generator() { jump = uint.MaxValue; }
+  protected Generator(LocalEnvironment env) { environment=env; jump=uint.MaxValue; }
 
   public object Current
   { get
@@ -1739,13 +1764,12 @@ public abstract class Generator : IEnumerator
   
   public void Reset() { throw new NotSupportedException(); }
 
-  protected abstract bool InnerNext(LocalEnvironment env);
+  protected abstract bool InnerNext(LocalEnvironment ENV);
   protected uint jump;
   protected object current;
+  protected LocalEnvironment environment;
   
   enum State : byte { Before, In, Done };
-  
-  readonly LocalEnvironment environment;
   State state;
 }
 #endregion
@@ -1813,6 +1837,8 @@ public sealed class DynamicMethodClosure : ClosureBase
     Constants = constants;
   }
 
+  // the Proc delegate of the new closure still references this object as its instance, but since the function only
+  // needs to access Bindings and Constants, which are readonly, it's okay.
   public DynamicMethodClosure Clone(LocalEnvironment env, object[] defaults)
   { DynamicMethodClosure dm = (DynamicMethodClosure)MemberwiseClone();
     dm.Environment = env;
