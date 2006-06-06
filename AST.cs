@@ -431,297 +431,6 @@ public class ScriptNameAttribute : Attribute
 }
 #endregion
 
-#region Options
-public enum OptimizeType : byte { None, Size, Speed }
-
-public sealed class Options
-{ Options() { Language = NullLanguage.Instance; }
-
-  public bool OptimizeAny { get { return Optimize!=OptimizeType.None; } }
-  public bool OptimizeSize { get { return Optimize==OptimizeType.Size; } }
-  public bool OptimizeSpeed { get { return Optimize==OptimizeType.Speed; } }
-
-  public Language Language;
-  public OptimizeType Optimize;
-  public bool Debug, DebugModules, IsPreCompilation;
-  
-  public static Options Current
-  { get { return Pushed==null || Pushed.Count==0 ? Default : Pushed.Peek(); }
-  }
-
-  public static void Restore() { Pushed.Pop(); }
-
-  public static void Save()
-  { if(Pushed==null) Pushed = new Stack<Options>();
-    Pushed.Push((Options)Current.MemberwiseClone());
-  }
-
-  public static Options Default = new Options();
-
-  [ThreadStatic] static Stack<Options> Pushed;
-}
-#endregion
-
-#region Node
-public abstract class Node
-{ [Flags] public enum Flag : byte { Tail=1, Const=2, ClearsStack=4, Interrupts=8 };
-
-  public bool ClearsStack
-  { get { return (Flags&Flag.ClearsStack) != 0; }
-    set { if(value) Flags|=Flag.ClearsStack; else Flags&=~Flag.ClearsStack; }
-  }
-
-  public bool Interrupts
-  { get { return (Flags&Flag.Interrupts) != 0; }
-    set { if(value) Flags|=Flag.Interrupts; else Flags&=~Flag.Interrupts; }
-  }
-
-  public bool IsConstant
-  { get { return (Flags&Flag.Const) != 0; }
-    set { if(value) Flags|=Flag.Const; else Flags&=~Flag.Const; }
-  }
-
-  public bool Tail
-  { get { return (Flags&Flag.Tail) != 0; }
-    set { if(value) Flags|=Flag.Tail; else Flags&=~Flag.Tail; }
-  }
-
-  public void Emit(CodeGenerator cg) { EmitTyped(cg, typeof(object)); }
-  public abstract void Emit(CodeGenerator cg, ref Type etype);
-
-  public void EmitString(CodeGenerator cg) { EmitTyped(cg, typeof(string)); }
-
-  public void EmitTyped(CodeGenerator cg, Type desired)
-  { Type type = desired;
-    Emit(cg, ref type);
-    if(!AreEquivalent(type, desired))
-    { if(desired.IsValueType && type==typeof(object))
-      { cg.ILG.Emit(OpCodes.Unbox, desired);
-        cg.EmitIndirectLoad(desired);
-      }
-      else if(!type.IsValueType && !desired.IsValueType)
-      { if(desired==typeof(IProcedure))
-        { if(type.IsSubclassOf(typeof(Delegate))) cg.EmitCall(typeof(Ops), "MakeProcedure", typeof(Delegate));
-          else cg.EmitCall(typeof(Ops), "ExpectProcedure");
-        }
-        else if(!desired.IsAssignableFrom(type)) cg.ILG.Emit(OpCodes.Castclass, desired);
-      }
-      else cg.EmitConvertTo(desired, type);
-    }
-  }
-
-  public void EmitVoid(CodeGenerator cg)
-  { if(!IsConstant)
-    { Type type = typeof(void);
-      Emit(cg, ref type);
-      if(type!=typeof(void)) cg.ILG.Emit(OpCodes.Pop);
-    }
-  }
-
-  public virtual object Evaluate() { throw new NotSupportedException(); }
-  public string GenerateName(string baseName) { return Options.Current.Language.GenerateName(this, baseName); }
-  public virtual Type GetNodeType() { return typeof(object); }
-  public virtual void MarkTail(bool tail) { Tail = tail; }
-  public virtual void Optimize() { }
-  public void Preprocess() { MarkTail(true); }
-  public virtual void SetFlags() { }
-  public virtual void Postprocess() { }
-
-  public virtual void Walk(IWalker w)
-  { w.Walk(this);
-    w.PostWalk(this);
-  }
-
-  public ExceptionNode InTry;
-  public Position StartPos, EndPos;
-  public Flag Flags;
-
-  public static bool AreCompatible(Type type, Type desired)
-  { if((type!=null && type.IsValueType) != (desired!=null && desired.IsValueType)) return false;
-    Conversion conv = Ops.ConvertTo(type, desired);
-    return conv!=Conversion.None && conv!=Conversion.Unsafe;
-  }
-
-  public static bool AreConstant(Node n1, Node n2)
-  { return (n1==null || n1.IsConstant) && (n2!=null || n2.IsConstant);
-  }
-  public static bool AreConstant(params Node[] nodes)
-  { foreach(Node n in nodes) if(n!=null && !n.IsConstant) return false;
-    return true;
-  }
-
-  public static bool AreEquivalent(Type type, Type desired)
-  { Conversion conv = Ops.ConvertTo(type, desired);
-    return conv==Conversion.Identity || conv==Conversion.Reference;
-  }
-
-  public static void EmitConstant(CodeGenerator cg, object value, ref Type etype)
-  { if(etype==null) cg.EmitNull();
-    else if(etype==typeof(void)) return;
-    else
-    { value = TryConvert(value, ref etype);
-      if(etype.IsValueType)
-      { if(Type.GetTypeCode(etype)!=TypeCode.Object) cg.EmitConstant(value);
-        else
-        { cg.EmitConstantObject(value);
-          cg.ILG.Emit(OpCodes.Unbox, etype);
-          cg.EmitIndirectLoad(etype);
-        }
-      }
-      else cg.EmitConstantObject(value);
-    }
-  }
-
-  public static bool HasInterrupt(Node n1, Node n2) { return n1!=null && n1.Interrupts || n2!=null && n2.Interrupts; }
-  public static bool HasInterrupt(params Node[] nodes) { return HasInterrupt(nodes, 0, nodes.Length); }
-  public static bool HasInterrupt(Node[] nodes, int start, int length)
-  { while(length-->0)
-    { Node n = nodes[length+start];
-      if(n!=null && n.Interrupts) return true;
-    }
-    return false;
-  }
-
-  public static bool HasExcept(Node n1, Node n2) { return n1!=null && n1.ClearsStack || n2!=null && n2.ClearsStack; }
-  public static bool HasExcept(params Node[] nodes) { return HasExcept(nodes, 0, nodes.Length); }
-  public static bool HasExcept(Node[] nodes, int start, int length)
-  { while(length-->0)
-    { Node n = nodes[length+start];
-      if(n!=null && n.ClearsStack) return true;
-    }
-    return false;
-  }
-
-  public static object[] MakeObjectArray(Node[] nodes) { return MakeObjectArray(nodes, 0, nodes.Length); }
-  public static object[] MakeObjectArray(Node[] nodes, int start, int length)
-  { if(length==0) return Ops.EmptyArray;
-    object[] ret = new object[length];
-    for(int i=0; i<length; i++) ret[i] = nodes[i+start].Evaluate();
-    return ret;
-  }
-
-  public static object TryConvert(object value, ref Type etype)
-  { if(etype==null) return null;
-    if(etype==typeof(object)) return value;
-
-    Type vtype = value==null ? null : value.GetType();
-    if(AreCompatible(vtype, etype))
-    { value = Ops.ConvertTo(value, etype);
-      etype = value.GetType();
-    }
-    else etype = value.GetType();
-    return value;
-  }
-
-  // TODO: see if this and the related stuff can be implemented using CodeGenerator.EmitConvert
-  protected static void EmitTryConvert(CodeGenerator cg, Type onStack, ref Type etype)
-  { if(onStack==etype) return;
-    if(onStack!=typeof(object) && !AreCompatible(onStack, etype))
-      throw new InvalidOperationException(string.Format("Type mismatch: {0} var and {1} etype", onStack, etype));
-    else if(!etype.IsValueType)
-    { if(!onStack.IsValueType) etype = typeof(object);
-      else
-      { cg.ILG.Emit(OpCodes.Box, onStack);
-        etype = onStack;
-      }
-    }
-    else if(onStack==typeof(object)) etype = typeof(object);
-    else etype = onStack;
-  }
-
-  protected void TailReturn(CodeGenerator cg)
-  { if(Tail)
-    { if(InTry==null) cg.EmitReturn();
-      else
-      { if(InTry.ReturnSlot!=null) InTry.ReturnSlot.EmitSet(cg);
-        cg.ILG.Emit(OpCodes.Leave, InTry.LeaveLabel);
-      }
-    }
-  }
-}
-#endregion
-
-} // namespace Scripting
-
-namespace Scripting.Backend
-{
-
-#region Argument
-public enum ArgType { Normal, List, Dict };
-
-public struct Argument
-{ public Argument(Node expr) { Name=null; Expression=expr; Type=ArgType.Normal; }
-  public Argument(string name, Node expr) { Name=name; Expression=expr; Type=ArgType.Normal; }
-  public Argument(Node expr, ArgType type) { Name=null; Expression=expr; Type=type; }
-
-  public string Name;
-  public Node Expression;
-  public ArgType Type;
-}
-#endregion
-
-#region CachedList
-public sealed class CachedList<T> : List<T>, IDisposable
-{ public void Dispose()
-  { if(!disposed)
-    { CachedList<T>.Free(this);
-      disposed = true;
-    }
-  }
-
-  const int MaxArrays = 16;
-
-  public static CachedList<T> Alloc()
-  { lock(arrays) return arrays.Count==0 ? new CachedList<T>() : arrays.Pop();
-  }
-
-  public static void Free(CachedList<T> array)
-  { array.Clear();
-    lock(arrays) if(arrays.Count<MaxArrays) arrays.Push(array);
-  }
-
-  bool disposed;
-
-  static readonly Stack<CachedList<T>> arrays = new Stack<CachedList<T>>();
-}
-#endregion
-
-#region Except
-public struct Except
-{ public Except(Node type, Node body) : this(null, type==null ? null : new Node[] { type }, body) { }
-  public Except(Node[] types, Node body) : this(null, types, body) { }
-  public Except(string var, Node type, Node body) : this(var, type==null ? null : new Node[] { type }, body) { }
-  public Except(string var, Node[] types, Node body)
-  { Var   = var==null ? null : new Name(var);
-    Body  = body;
-    Types = types==null || types.Length==0 ? null : types;
-  }
-
-  public Name Var;
-  public readonly Node[] Types;
-  public readonly Node Body;
-}
-#endregion
-
-#region Exceptions
-public abstract class ImplException : ApplicationException { }
-public sealed class BreakException : ImplException
-{ public BreakException(string name) { Name=name; }
-  public readonly string Name;
-}
-public sealed class RestartException : ImplException
-{ public RestartException(string name) { Name=name; }
-  public readonly string Name;
-}
-#endregion
-
-#region Index
-public sealed class Index
-{ public long Next { get { lock(this) return index++; } }
-  long index;
-}
-#endregion
-
 #region Language
 public abstract class Language
 { static Language()
@@ -1114,6 +823,297 @@ public sealed class NullLanguage : Language
   public override string ToCode(Node node) { throw new NotSupportedException("Null language has no syntax"); }
 
   public static readonly NullLanguage Instance = new NullLanguage();
+}
+#endregion
+
+#region Options
+public enum OptimizeType : byte { None, Size, Speed }
+
+public sealed class Options
+{ Options() { Language = NullLanguage.Instance; }
+
+  public bool OptimizeAny { get { return Optimize!=OptimizeType.None; } }
+  public bool OptimizeSize { get { return Optimize==OptimizeType.Size; } }
+  public bool OptimizeSpeed { get { return Optimize==OptimizeType.Speed; } }
+
+  public Language Language;
+  public OptimizeType Optimize;
+  public bool Debug, DebugModules, IsPreCompilation;
+  
+  public static Options Current
+  { get { return Pushed==null || Pushed.Count==0 ? Default : Pushed.Peek(); }
+  }
+
+  public static void Restore() { Pushed.Pop(); }
+
+  public static void Save()
+  { if(Pushed==null) Pushed = new Stack<Options>();
+    Pushed.Push((Options)Current.MemberwiseClone());
+  }
+
+  public static Options Default = new Options();
+
+  [ThreadStatic] static Stack<Options> Pushed;
+}
+#endregion
+
+#region Node
+public abstract class Node
+{ [Flags] public enum Flag : byte { Tail=1, Const=2, ClearsStack=4, Interrupts=8 };
+
+  public bool ClearsStack
+  { get { return (Flags&Flag.ClearsStack) != 0; }
+    set { if(value) Flags|=Flag.ClearsStack; else Flags&=~Flag.ClearsStack; }
+  }
+
+  public bool Interrupts
+  { get { return (Flags&Flag.Interrupts) != 0; }
+    set { if(value) Flags|=Flag.Interrupts; else Flags&=~Flag.Interrupts; }
+  }
+
+  public bool IsConstant
+  { get { return (Flags&Flag.Const) != 0; }
+    set { if(value) Flags|=Flag.Const; else Flags&=~Flag.Const; }
+  }
+
+  public bool Tail
+  { get { return (Flags&Flag.Tail) != 0; }
+    set { if(value) Flags|=Flag.Tail; else Flags&=~Flag.Tail; }
+  }
+
+  public void Emit(CodeGenerator cg) { EmitTyped(cg, typeof(object)); }
+  public abstract void Emit(CodeGenerator cg, ref Type etype);
+
+  public void EmitString(CodeGenerator cg) { EmitTyped(cg, typeof(string)); }
+
+  public void EmitTyped(CodeGenerator cg, Type desired)
+  { Type type = desired;
+    Emit(cg, ref type);
+    if(!AreEquivalent(type, desired))
+    { if(desired.IsValueType && type==typeof(object))
+      { cg.ILG.Emit(OpCodes.Unbox, desired);
+        cg.EmitIndirectLoad(desired);
+      }
+      else if(!type.IsValueType && !desired.IsValueType)
+      { if(desired==typeof(IProcedure))
+        { if(type.IsSubclassOf(typeof(Delegate))) cg.EmitCall(typeof(Ops), "MakeProcedure", typeof(Delegate));
+          else cg.EmitCall(typeof(Ops), "ExpectProcedure");
+        }
+        else if(!desired.IsAssignableFrom(type)) cg.ILG.Emit(OpCodes.Castclass, desired);
+      }
+      else cg.EmitConvertTo(desired, type);
+    }
+  }
+
+  public void EmitVoid(CodeGenerator cg)
+  { if(!IsConstant)
+    { Type type = typeof(void);
+      Emit(cg, ref type);
+      if(type!=typeof(void)) cg.ILG.Emit(OpCodes.Pop);
+    }
+  }
+
+  public virtual object Evaluate() { throw new NotSupportedException(); }
+  public string GenerateName(string baseName) { return Options.Current.Language.GenerateName(this, baseName); }
+  public virtual Type GetNodeType() { return typeof(object); }
+  public virtual void MarkTail(bool tail) { Tail = tail; }
+  public virtual void Optimize() { }
+  public void Preprocess() { MarkTail(true); }
+  public virtual void SetFlags() { }
+  public virtual void Postprocess() { }
+
+  public virtual void Walk(IWalker w)
+  { w.Walk(this);
+    w.PostWalk(this);
+  }
+
+  public ExceptionNode InTry;
+  public Position StartPos, EndPos;
+  public Flag Flags;
+
+  public static bool AreCompatible(Type type, Type desired)
+  { if((type!=null && type.IsValueType) != (desired!=null && desired.IsValueType)) return false;
+    Conversion conv = Ops.ConvertTo(type, desired);
+    return conv!=Conversion.None && conv!=Conversion.Unsafe;
+  }
+
+  public static bool AreConstant(Node n1, Node n2)
+  { return (n1==null || n1.IsConstant) && (n2!=null || n2.IsConstant);
+  }
+  public static bool AreConstant(params Node[] nodes)
+  { foreach(Node n in nodes) if(n!=null && !n.IsConstant) return false;
+    return true;
+  }
+
+  public static bool AreEquivalent(Type type, Type desired)
+  { Conversion conv = Ops.ConvertTo(type, desired);
+    return conv==Conversion.Identity || conv==Conversion.Reference;
+  }
+
+  public static void EmitConstant(CodeGenerator cg, object value, ref Type etype)
+  { if(etype==null) cg.EmitNull();
+    else if(etype==typeof(void)) return;
+    else
+    { value = TryConvert(value, ref etype);
+      if(etype.IsValueType)
+      { if(Type.GetTypeCode(etype)!=TypeCode.Object) cg.EmitConstant(value);
+        else
+        { cg.EmitConstantObject(value);
+          cg.ILG.Emit(OpCodes.Unbox, etype);
+          cg.EmitIndirectLoad(etype);
+        }
+      }
+      else cg.EmitConstantObject(value);
+    }
+  }
+
+  public static bool HasInterrupt(Node n1, Node n2) { return n1!=null && n1.Interrupts || n2!=null && n2.Interrupts; }
+  public static bool HasInterrupt(params Node[] nodes) { return HasInterrupt(nodes, 0, nodes.Length); }
+  public static bool HasInterrupt(Node[] nodes, int start, int length)
+  { while(length-->0)
+    { Node n = nodes[length+start];
+      if(n!=null && n.Interrupts) return true;
+    }
+    return false;
+  }
+
+  public static bool HasExcept(Node n1, Node n2) { return n1!=null && n1.ClearsStack || n2!=null && n2.ClearsStack; }
+  public static bool HasExcept(params Node[] nodes) { return HasExcept(nodes, 0, nodes.Length); }
+  public static bool HasExcept(Node[] nodes, int start, int length)
+  { while(length-->0)
+    { Node n = nodes[length+start];
+      if(n!=null && n.ClearsStack) return true;
+    }
+    return false;
+  }
+
+  public static object[] MakeObjectArray(Node[] nodes) { return MakeObjectArray(nodes, 0, nodes.Length); }
+  public static object[] MakeObjectArray(Node[] nodes, int start, int length)
+  { if(length==0) return Ops.EmptyArray;
+    object[] ret = new object[length];
+    for(int i=0; i<length; i++) ret[i] = nodes[i+start].Evaluate();
+    return ret;
+  }
+
+  public static object TryConvert(object value, ref Type etype)
+  { if(etype==null) return null;
+    if(etype==typeof(object)) return value;
+
+    Type vtype = value==null ? null : value.GetType();
+    if(AreCompatible(vtype, etype))
+    { value = Ops.ConvertTo(value, etype);
+      etype = value.GetType();
+    }
+    else etype = value.GetType();
+    return value;
+  }
+
+  // TODO: see if this and the related stuff can be implemented using CodeGenerator.EmitConvert
+  protected static void EmitTryConvert(CodeGenerator cg, Type onStack, ref Type etype)
+  { if(onStack==etype) return;
+    if(onStack!=typeof(object) && !AreCompatible(onStack, etype))
+      throw new InvalidOperationException(string.Format("Type mismatch: {0} var and {1} etype", onStack, etype));
+    else if(!etype.IsValueType)
+    { if(!onStack.IsValueType) etype = typeof(object);
+      else
+      { cg.ILG.Emit(OpCodes.Box, onStack);
+        etype = onStack;
+      }
+    }
+    else if(onStack==typeof(object)) etype = typeof(object);
+    else etype = onStack;
+  }
+
+  protected void TailReturn(CodeGenerator cg)
+  { if(Tail)
+    { if(InTry==null) cg.EmitReturn();
+      else
+      { if(InTry.ReturnSlot!=null) InTry.ReturnSlot.EmitSet(cg);
+        cg.ILG.Emit(OpCodes.Leave, InTry.LeaveLabel);
+      }
+    }
+  }
+}
+#endregion
+
+} // namespace Scripting
+
+namespace Scripting.Backend
+{
+
+#region Argument
+public enum ArgType { Normal, List, Dict };
+
+public struct Argument
+{ public Argument(Node expr) { Name=null; Expression=expr; Type=ArgType.Normal; }
+  public Argument(string name, Node expr) { Name=name; Expression=expr; Type=ArgType.Normal; }
+  public Argument(Node expr, ArgType type) { Name=null; Expression=expr; Type=type; }
+
+  public string Name;
+  public Node Expression;
+  public ArgType Type;
+}
+#endregion
+
+#region CachedList
+public sealed class CachedList<T> : List<T>, IDisposable
+{ public void Dispose()
+  { if(!disposed)
+    { CachedList<T>.Free(this);
+      disposed = true;
+    }
+  }
+
+  const int MaxArrays = 16;
+
+  public static CachedList<T> Alloc()
+  { lock(arrays) return arrays.Count==0 ? new CachedList<T>() : arrays.Pop();
+  }
+
+  public static void Free(CachedList<T> array)
+  { array.Clear();
+    lock(arrays) if(arrays.Count<MaxArrays) arrays.Push(array);
+  }
+
+  bool disposed;
+
+  static readonly Stack<CachedList<T>> arrays = new Stack<CachedList<T>>();
+}
+#endregion
+
+#region Except
+public struct Except
+{ public Except(Node type, Node body) : this(null, type==null ? null : new Node[] { type }, body) { }
+  public Except(Node[] types, Node body) : this(null, types, body) { }
+  public Except(string var, Node type, Node body) : this(var, type==null ? null : new Node[] { type }, body) { }
+  public Except(string var, Node[] types, Node body)
+  { Var   = var==null ? null : new Name(var);
+    Body  = body;
+    Types = types==null || types.Length==0 ? null : types;
+  }
+
+  public Name Var;
+  public readonly Node[] Types;
+  public readonly Node Body;
+}
+#endregion
+
+#region Exceptions
+public abstract class ImplException : ApplicationException { }
+public sealed class BreakException : ImplException
+{ public BreakException(string name) { Name=name; }
+  public readonly string Name;
+}
+public sealed class RestartException : ImplException
+{ public RestartException(string name) { Name=name; }
+  public readonly string Name;
+}
+#endregion
+
+#region Index
+public sealed class Index
+{ public long Next { get { lock(this) return index++; } }
+  long index;
 }
 #endregion
 

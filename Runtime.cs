@@ -240,6 +240,12 @@ public sealed class TopLevel : MemberContainer
   public new bool Contains(string name) { return Globals.Contains(name); }
   public bool ContainsMacro(string name) { return Macros!=null && Macros.Contains(name); }
 
+  public void ExportAll(TopLevel topLevel)
+  { foreach(KeyValuePair<string,Binding> pair in Globals.Dict) topLevel.Globals.Dict[pair.Key] = pair.Value;
+    if(Macros!=null)
+      foreach(KeyValuePair<string,Binding> pair in Macros.Dict) topLevel.Macros.Dict[pair.Key] = pair.Value;
+  }
+
   public object Get(string name) { return Globals.Get(name); }
   public bool Get(string name, out object value) { return Globals.Get(name, out value); }
   public Binding GetBinding(string name) { return Globals.GetBinding(name, this); }

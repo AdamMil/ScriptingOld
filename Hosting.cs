@@ -179,8 +179,8 @@ public abstract class TextFrontend
         MemberContainer builtins = Options.Current.Language.Builtins;
         if(builtins!=null) builtins.Export(TopLevel.Current);
         LambdaNode body = AST.CreateCompiled(AST.Create(node));
-        if(WriteSnippets) SnippetMaker.Generate(body, basename).Run(null);
-        else SnippetMaker.GenerateDynamic(body).Run(null);
+        if(WriteSnippets) SnippetMaker.Generate(body, basename).Run();
+        else SnippetMaker.GenerateDynamic(body).Run();
       }
       finally { if(WriteSnippets) SnippetMaker.DumpAssembly(); }
   }
@@ -197,8 +197,8 @@ public abstract class TextFrontend
       if(code==null) break;
       try
       { Node node = Options.Current.Language.Parse("<interactive>", code);
-        DisplayReturn(Compiled ? WriteSnippets ? SnippetMaker.Generate(AST.CreateCompiled(node)).Run(null)
-                                               : SnippetMaker.GenerateDynamic(AST.CreateCompiled(node)).Run(null)
+        DisplayReturn(Compiled ? WriteSnippets ? SnippetMaker.Generate(AST.CreateCompiled(node)).Run()
+                                               : SnippetMaker.GenerateDynamic(AST.CreateCompiled(node)).Run()
                                : AST.Create(node).Evaluate());
       }
       catch(Exception e) { Output.WriteLine("ERROR: "+e.ToString()); }
