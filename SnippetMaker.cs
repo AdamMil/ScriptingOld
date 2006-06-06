@@ -28,7 +28,8 @@ namespace Scripting
 {
 
 public abstract class Snippet
-{ public abstract object Run(LocalEnvironment ENV);
+{ public object Run() { return Run(null); }
+  protected abstract object Run(LocalEnvironment ENV);
 }
 
 public delegate object SnippetDelegate(LocalEnvironment env);
@@ -40,7 +41,7 @@ public sealed class DynamicSnippet : Snippet
     Constants = constants;
   }
 
-  public override object Run(LocalEnvironment env) { return Proc(env); }
+  protected override object Run(LocalEnvironment env) { return Proc(env); }
 
   public readonly SnippetDelegate Proc;
   readonly object[] Bindings;

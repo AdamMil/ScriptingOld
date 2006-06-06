@@ -413,11 +413,14 @@ public sealed class LessEqualOperator : ComparisonOperator
   public override void EmitOp(CodeGenerator cg, ref Type etype)
   { if(etype.IsValueType)
     { cg.EmitCall(typeof(Ops), "Compare");
-      cg.EmitInt(0);
-      cg.ILG.Emit(OpCodes.Cgt);
-      if(etype==typeof(bool)) etype = typeof(CodeGenerator.negbool);
+      if(etype==typeof(bool))
+      { cg.EmitInt(0);
+        cg.ILG.Emit(OpCodes.Cgt);
+        etype = typeof(CodeGenerator.negbool);
+      }
       else
-      { cg.EmitLogicalNot();
+      { cg.EmitInt(1);
+        cg.ILG.Emit(OpCodes.Clt);
         cg.EmitConvertTo(etype, typeof(bool));
       }
     }
@@ -477,11 +480,16 @@ public sealed class MoreEqualOperator : ComparisonOperator
   public override void EmitOp(CodeGenerator cg, ref Type etype)
   { if(etype==typeof(bool))
     { cg.EmitCall(typeof(Ops), "Compare");
-      cg.EmitInt(0);
-      cg.ILG.Emit(OpCodes.Clt);
-      if(etype==typeof(bool)) etype = typeof(CodeGenerator.negbool);
+      if(etype==typeof(bool))
+      { cg.EmitInt(0);
+        cg.ILG.Emit(OpCodes.Clt);
+        etype = typeof(CodeGenerator.negbool);
+      }
       else
-      { cg.EmitLogicalNot();
+      { // TODO: maybe the JIT has some special peephole optimization for the N, 0, Clt, Not/Neg sequence, and doing
+        // the N, -1, Cgt sequence is actually worse?
+        cg.EmitInt(-1);
+        cg.ILG.Emit(OpCodes.Cgt);
         cg.EmitConvertTo(etype, typeof(bool));
       }
     }

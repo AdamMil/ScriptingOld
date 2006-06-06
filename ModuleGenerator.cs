@@ -157,7 +157,7 @@ public static class ModuleGenerator
         nodes[i] = AST.CreateCompiled(attr.Language.Parse(sourceName, attr.Code));
         if((attr.RunAt&RunAt.CompileTime)!=0)
         { Options.Current.IsPreCompilation = true;
-          SnippetMaker.Generate(nodes[i]).Run(null);
+          SnippetMaker.Generate(nodes[i]).Run();
           Options.Current.IsPreCompilation = false;
         }
         if((attr.RunAt&RunAt.Runtime)!=0) closedVars = Math.Max(closedVars, nodes[i].ClosedVars);

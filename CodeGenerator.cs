@@ -508,7 +508,7 @@ public class CodeGenerator
 
   public void EmitNull() { ILG.Emit(OpCodes.Ldnull); }
 
-  // TODO: skip over nodes that simply emit null
+  // TODO: skip over nodes that simply emit null (because the arrays elements are initialized to null)
   public void EmitObjectArray(Node[] exprs) { EmitObjectArray(exprs, 0, exprs.Length, false); }
   public void EmitObjectArray(Node[] exprs, int start, int length) { EmitObjectArray(exprs, start, length, false); }
   public Slot EmitObjectArray(Node[] exprs, bool allocate)
